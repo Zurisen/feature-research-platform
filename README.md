@@ -1,36 +1,37 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# LeadLoop
 
-## Getting Started
+Decide what to build next. A developer agent researches feature ideas for a business, one agent per sales lead reacts to them over several rounds, and the developer agent produces a ranked list.
 
-First, run the development server:
+This is the first, local iteration: single user, no login, data in JSON files under `data/`.
+
+## Run it
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. Agents run through the Claude Agent SDK, which uses the Claude Code login on this machine by default, so no API key is needed. To use an Anthropic API key instead, copy `.env.example` to `.env.local`, set `ANTHROPIC_API_KEY`, and switch the mode in Settings.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## How a run works
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+1. The developer agent researches the business (optionally with web search) and proposes candidate features.
+2. Each lead agent, built from that lead's profile, scores and comments on every feature.
+3. The developer agent revises the list from the feedback and sends a note back to the leads. Steps 2 and 3 repeat for the chosen number of rounds.
+4. The developer agent gives RICE inputs for the final list. The app computes the score (reach x impact x confidence / effort) and shows it next to the average lead score.
 
-## Learn More
+Lead agents are simulated from profile data. Treat the ranking as a way to focus real customer conversations, not as a replacement for them.
 
-To learn more about Next.js, take a look at the following resources:
+## Data sources
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+- **Manual**: describe the business and at least 5 leads.
+- **Apollo.io**: OAuth connection (see Settings for the registration steps and `.env.example` for the variables). Apollo must approve the OAuth app and requires an https redirect URL, so `APOLLO_API_KEY` is supported as a development fallback. Importing the business profile costs 1 Apollo credit; loading saved contacts is free but needs a paid Apollo plan. Emails and phone numbers are not imported.
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Layout
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `src/lib/engine.ts`: runs one agent turn through the Agent SDK (local login or API key), with structured output.
+- `src/lib/orchestrator.ts`: the research, feedback, revision and ranking loop.
+- `src/lib/prompts.ts`: prompts for the developer and lead agents.
+- `src/lib/apollo.ts`: Apollo OAuth and API calls.
+- `src/lib/store.ts`: JSON-file persistence.
+- `src/app`: pages and API routes.

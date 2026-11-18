@@ -1,9 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  /* config options here */
-  cacheComponents: true,
-  partialPrefetching: true,
+  // The Agent SDK spawns the Claude Code binary, so it must be loaded by Node rather than bundled.
+  serverExternalPackages: ["@anthropic-ai/claude-agent-sdk"],
   turbopack: {
     rules: {
       "*.css": {
