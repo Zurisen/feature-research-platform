@@ -135,3 +135,49 @@ body {
   font-size: 14px;
   line-height: 1.6;
 }
+
+/* Labels floating above agents in the 3D view */
+.agent-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  will-change: transform;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: max-content;
+  max-width: 190px;
+  padding: 5px 9px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.3;
+  text-align: left;
+}
+.agent-label[data-state="idle"] {
+  opacity: 0.7;
+}
+.agent-label-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.agent-label-name i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+.agent-label-text {
+  color: var(--muted);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}

@@ -1,0 +1,65 @@
+{
+  "name": "Sample: TrailLog roadmap",
+  "source": "manual",
+  "business": {
+    "name": "TrailLog (sample)",
+    "website": "",
+    "industry": "Fitness software",
+    "employees": "12",
+    "description": "Fictional sample business. A mobile app for hiking clubs to plan group hikes, track attendance and share routes. Sold as a per-club monthly subscription to club organisers."
+  },
+  "focusArea": "Features that help clubs retain members",
+  "extraContext": "",
+  "leads": [
+    {
+      "id": "l1",
+      "name": "Dana Okafor",
+      "title": "Club President",
+      "company": "Ridgeway Hiking Club",
+      "industry": "Non-profit",
+      "companySize": "300 members",
+      "location": "",
+      "notes": "Volunteer-run, struggles with no-shows"
+    },
+    {
+      "id": "l2",
+      "name": "Lee Tanaka",
+      "title": "Outdoor Programme Manager",
+      "company": "City Parks Department",
+      "industry": "Government",
+      "companySize": "80 staff",
+      "location": "",
+      "notes": "Runs guided public walks, needs reporting for funders"
+    },
+    {
+      "id": "l3",
+      "name": "Sam Rivera",
+      "title": "Owner",
+      "company": "Summit Guides",
+      "industry": "Adventure tourism",
+      "companySize": "6 staff",
+      "location": "",
+      "notes": "Paid guided trips, cares about liability waivers and payments"
+    },
+    {
+      "id": "l4",
+      "name": "Priya Nair",
+      "title": "Student Society Lead",
+      "company": "University Outdoor Society",
+      "industry": "Education",
+      "companySize": "150 members",
+      "location": "",
+      "notes": "High annual turnover of members and committee"
+    },
+    {
+      "id": "l5",
+      "name": "Tom Becker",
+      "title": "Wellbeing Lead",
+      "company": "Mid-size engineering firm",
+      "industry": "Engineering",
+      "companySize": "400 employees",
+      "location": "",
+      "notes": "Organises monthly staff hikes as a wellbeing benefit"
+    }
+  ]
+}

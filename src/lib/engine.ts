@@ -7,7 +7,12 @@ import { Settings } from "./types";
 
 // One agent turn = one headless Claude Code session driven through the Agent SDK.
 // authMode "local" reuses the Claude Code login on this machine; "apiKey" uses ANTHROPIC_API_KEY.
-// Agents get no file or shell tools: only web search/fetch when `web` is set.
+// Agents get no file or shell tools: only web search/fetch when `web` is set, and the Skill tool when
+// a vendored plugin is attached (see vendor/README.md).
+
+const PLUGIN_DIR = path.join(process.cwd(), "vendor", "knowledge-work-plugins");
+
+export type AgentSkills = { plugin: "product-management" | "sales"; names: string[] };
 
 export type AgentCall<T> = {
   system: string;
@@ -15,6 +20,7 @@ export type AgentCall<T> = {
   schema: z.ZodType<T>;
   model: string;
   web?: boolean;
+  skills?: AgentSkills;
   authMode: Settings["authMode"];
   signal: AbortSignal;
   onActivity?: (text: string) => void;
@@ -43,7 +49,14 @@ export async function runAgent<T>(call: AgentCall<T>): Promise<{ data: T; costUs
   if (call.signal.aborted) throw new Error("Cancelled");
   call.signal.addEventListener("abort", onAbort, { once: true });
 
-  const tools = call.web ? ["WebSearch", "WebFetch"] : [];
+  const tools = [...(call.web ? ["WebSearch", "WebFetch"] : []), ...(call.skills ? ["Skill"] : [])];
+  const pluginOptions = call.skills
+    ? {
+        plugins: [{ type: "local" as const, path: path.join(PLUGIN_DIR, call.skills.plugin) }],
+        // Only the listed skills are visible to the agent; names are namespaced by plugin.
+        skills: call.skills.names.map((n) => `${call.skills!.plugin}:${n}`),
+      }
+    : {};
   try {
     const stream = query({
       prompt: call.prompt,
@@ -54,7 +67,8 @@ export async function runAgent<T>(call: AgentCall<T>): Promise<{ data: T; costUs
         allowedTools: tools,
         permissionMode: "dontAsk",
         settingSources: [], // do not load the user's CLAUDE.md, skills, hooks or MCP servers
-        maxTurns: call.web ? 40 : 6,
+        maxTurns: call.web ? 50 : call.skills ? 16 : 6,
+        ...pluginOptions,
         cwd,
         env: agentEnv(call.authMode),
         abortController,
@@ -70,7 +84,8 @@ export async function runAgent<T>(call: AgentCall<T>): Promise<{ data: T; costUs
       if (m.type === "assistant" && call.onActivity) {
         for (const block of m.message.content) {
           if (block.type !== "tool_use") continue;
-          const input = block.input as { query?: string; url?: string };
+          const input = block.input as { query?: string; url?: string; skill?: string };
+          if (block.name === "Skill" && input.skill) call.onActivity(`Using skill ${input.skill.split(":").pop()}`);
           if (block.name === "WebSearch" && input.query) call.onActivity(`Searching the web: ${input.query}`);
           else if (block.name === "WebFetch" && input.url) call.onActivity(`Reading ${input.url}`);
         }

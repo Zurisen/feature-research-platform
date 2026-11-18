@@ -44,7 +44,9 @@ export default function ProjectPage() {
   if (error && !data) return <p className="text-sm text-bad">{error}</p>;
   if (!data) return <p className="hint">Loading…</p>;
   const { project: p, runs } = data;
-  const agentCalls = settings ? 2 + (settings.rounds - 1) + settings.rounds * p.leads.length : 0;
+  const agentCalls = settings
+    ? 2 + (settings.rounds - 1) + settings.rounds * p.leads.length * (settings.debate ? 2 : 1) + (settings.personaBriefs ? p.leads.length : 0)
+    : 0;
 
   return (
     <div className="space-y-6">
@@ -79,14 +81,28 @@ export default function ProjectPage() {
                   {MODELS.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
                 </select>
               </div>
-              <label className="flex items-end gap-2 pb-2 text-sm">
+              <div>
+                <label className="label" htmlFor="cap">Capacity (person-months / quarter)</label>
+                <input id="cap" type="number" min={1} max={200} className="input" value={settings.teamCapacity} onChange={(e) => setSettings({ ...settings, teamCapacity: Math.max(1, Math.min(200, Number(e.target.value) || 1)) })} />
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+              <label className="flex items-center gap-2">
                 <input type="checkbox" checked={settings.webResearch} onChange={(e) => setSettings({ ...settings, webResearch: e.target.checked })} />
                 Web research
               </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={settings.personaBriefs} onChange={(e) => setSettings({ ...settings, personaBriefs: e.target.checked })} />
+                Research each lead first (persona briefs)
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={settings.debate} onChange={(e) => setSettings({ ...settings, debate: e.target.checked })} />
+                Leads react to each other
+              </label>
             </div>
             <p className="hint">
-              This run makes about {agentCalls} agent calls ({p.leads.length} leads × {settings.rounds} rounds, plus the developer
-              agent), using {settings.authMode === "local" ? "the Claude Code login on this machine" : "your Anthropic API key"}.
+              This run makes about {agentCalls} agent calls across {p.leads.length} leads and {settings.rounds} round
+              {settings.rounds > 1 ? "s" : ""}, using {settings.authMode === "local" ? "the Claude Code login on this machine" : "your Anthropic API key"}.
             </p>
           </>
         )}

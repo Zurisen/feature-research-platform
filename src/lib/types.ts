@@ -54,6 +54,12 @@ export const SettingsSchema = z.object({
   rounds: z.number().int().min(1).max(5).default(2),
   concurrency: z.number().int().min(1).max(8).default(3),
   webResearch: z.boolean().default(true),
+  // Research each lead's company and role before the feedback rounds (sales plugin skills).
+  personaBriefs: z.boolean().default(true),
+  // After giving their own view, leads see each other's positions and may revise.
+  debate: z.boolean().default(true),
+  // Person-months the team can spend per quarter; used to lay the ranking out as a roadmap.
+  teamCapacity: z.number().int().min(1).max(200).default(10),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -77,6 +83,16 @@ export const ResearchOutputSchema = z.object({
 });
 export type ResearchOutput = z.infer<typeof ResearchOutputSchema>;
 
+export const PersonaBriefSchema = z.object({
+  companyContext: z.string().describe("What the lead's company does and what is going on in its market, 2-4 sentences."),
+  rolePriorities: z.array(z.string()).describe("What someone in this role is measured on and cares about."),
+  likelyObjections: z.array(z.string()).describe("Objections this lead would plausibly raise to buying or adopting."),
+  buyingRole: z.enum(["economic buyer", "champion", "user", "influencer", "blocker", "unknown"]),
+  fit: z.enum(["strong", "medium", "weak"]).describe("How well this lead fits the business's ideal customer."),
+  fitReason: z.string(),
+});
+export type PersonaBrief = z.infer<typeof PersonaBriefSchema>;
+
 export const LeadFeedbackOutputSchema = z.object({
   items: z.array(
     z.object({
@@ -88,10 +104,39 @@ export const LeadFeedbackOutputSchema = z.object({
   ),
   missing: z.array(z.string()).describe("Things I would want that are not on the list."),
   overall: z.string().describe("First-person overall take, 2-4 sentences."),
+  topPick: z.string().describe("The id of the single feature I would choose if only one could be built."),
+  adoptionLikelihood: z
+    .number()
+    .int()
+    .min(1)
+    .max(5)
+    .describe("If my top pick shipped, how likely I would be to buy or expand: 1 = very unlikely, 5 = very likely."),
+  quote: z.string().describe("One sentence, in my own voice, that sums up my reaction."),
 });
 export type LeadFeedbackOutput = z.infer<typeof LeadFeedbackOutputSchema>;
 
-export type LeadFeedback = LeadFeedbackOutput & { leadId: string; error?: string };
+export const RebuttalOutputSchema = z.object({
+  revised: z
+    .array(
+      z.object({
+        featureId: z.string(),
+        score: z.number().int().min(1).max(5),
+        comment: z.string().describe("Why I changed my score, or why I disagree with another lead on this feature."),
+      }),
+    )
+    .describe("Only the features where I changed my mind or want to push back. Empty if my view stands."),
+  closing: z.string().describe("First-person closing statement after hearing the others, 1-3 sentences."),
+});
+export type RebuttalOutput = z.infer<typeof RebuttalOutputSchema>;
+
+export type LeadFeedback = LeadFeedbackOutput & { leadId: string; error?: string; rebuttal?: RebuttalOutput };
+
+/** A lead's score per feature for a round, after any revision made in the rebuttal step. */
+export function finalScores(fb: LeadFeedback): Map<string, number> {
+  const scores = new Map(fb.items.map((i) => [i.featureId, i.score]));
+  for (const r of fb.rebuttal?.revised ?? []) if (scores.has(r.featureId)) scores.set(r.featureId, r.score);
+  return scores;
+}
 
 export const RevisionOutputSchema = z.object({
   features: z.array(FeatureSchema).min(3).max(10),
@@ -102,14 +147,15 @@ export const RevisionOutputSchema = z.object({
 });
 export type RevisionOutput = z.infer<typeof RevisionOutputSchema>;
 
+// RICE inputs use the categories that vendor/claude-skills rice_prioritizer.py expects.
 export const RankingOutputSchema = z.object({
   ranked: z.array(
     z.object({
       featureId: z.string(),
-      reach: z.number().min(1).max(10).describe("Share of target customers affected, 1-10."),
-      impact: z.number().min(1).max(5).describe("Impact per customer, 1-5."),
-      confidence: z.number().min(0).max(100).describe("Confidence in the estimates, percent."),
-      effortWeeks: z.number().min(0.5).describe("Estimated effort in person-weeks."),
+      reach: z.number().int().min(0).describe("Estimated customers or prospects of this business affected per quarter."),
+      impact: z.enum(["massive", "high", "medium", "low", "minimal"]).describe("Impact per affected customer."),
+      confidence: z.enum(["high", "medium", "low"]).describe("Confidence in the estimates; lower when leads disagreed."),
+      effort: z.enum(["xs", "s", "m", "l", "xl"]).describe("xs = about 1 person-month, s = 3, m = 5, l = 8, xl = 13."),
       rationale: z.string(),
       champions: z.array(z.string()).describe("Names of leads who most wanted it."),
       concerns: z.string().describe("Main objections or risks raised. Empty string if none."),
@@ -124,6 +170,20 @@ export type RankedFeature = RankingOutput["ranked"][number] & {
   title: string;
   rice: number;
   avgLeadScore: number | null;
+  firstChoiceShare: number; // 0-1, share of leads who picked it as their single top feature
+  quarter: number | null; // quarter it lands in given team capacity
+};
+
+export type RunInsights = {
+  scoredBy: "rice_prioritizer.py" | "built-in";
+  quickWins: string[]; // feature ids
+  bigBets: string[];
+  totalEffortMonths: number;
+  meanAdoption: number | null;
+  themes: { name: string; count: number }[];
+  sentiment: { positive: number; neutral: number; negative: number } | null;
+  painPoints: string[];
+  requests: string[];
 };
 
 // ---------- Runs ----------
@@ -152,7 +212,9 @@ export type Run = {
   createdAt: string;
   finishedAt?: string;
   research?: string;
+  briefs?: Record<string, PersonaBrief>; // by lead id
   rounds: RunRound[];
+  insights?: RunInsights;
   ranking?: RankedFeature[];
   summary?: string;
   costUsd: number;

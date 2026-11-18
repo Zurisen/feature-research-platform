@@ -33,6 +33,14 @@ export default function Home() {
         <div className="card text-center">
           <p className="font-medium">No projects yet</p>
           <p className="hint mt-1">Create one from Apollo.io data, or type the business and five leads by hand.</p>
+          <button
+            className="btn mt-3"
+            onClick={() =>
+              api<Project>("/api/projects/sample", { method: "POST" }).then((p) => setProjects([p]), (e) => setError(e.message))
+            }
+          >
+            Load the sample project
+          </button>
         </div>
       )}
       <div className="grid gap-3 sm:grid-cols-2">

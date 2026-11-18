@@ -1,4 +1,4 @@
-import { Feature, Lead, LeadFeedback, Project, RunRound } from "./types";
+import { Feature, finalScores, Lead, LeadFeedback, PersonaBrief, Project, RunInsights, RunRound } from "./types";
 
 const line = (label: string, v: string) => (v.trim() ? `${label}: ${v.trim()}\n` : "");
 
@@ -31,6 +31,21 @@ function leadLine(l: Lead) {
     .join(" | ");
 }
 
+function briefText(b: PersonaBrief) {
+  return (
+    `Company context: ${b.companyContext}\n` +
+    `Role priorities: ${b.rolePriorities.join("; ")}\n` +
+    `Likely objections: ${b.likelyObjections.join("; ")}\n` +
+    `Buying role: ${b.buyingRole}. Fit: ${b.fit} (${b.fitReason})`
+  );
+}
+
+function leadsBlock(p: Project, briefs: Record<string, PersonaBrief>) {
+  return p.leads
+    .map((l) => `<lead>\n${leadLine(l)}${briefs[l.id] ? `\n${briefText(briefs[l.id])}` : ""}\n</lead>`)
+    .join("\n");
+}
+
 export function featureList(features: Feature[]) {
   return features
     .map(
@@ -40,33 +55,78 @@ export function featureList(features: Feature[]) {
     .join("\n");
 }
 
-function feedbackDigest(feedback: LeadFeedback[], leads: Lead[]) {
-  return feedback
-    .filter((f) => !f.error)
-    .map((f) => {
-      const lead = leads.find((l) => l.id === f.leadId);
-      const items = f.items
-        .map((i) => `  - ${i.featureId}: ${i.score}/5, ${i.wouldUse ? "would use" : "would not use"}. ${i.comment}`)
-        .join("\n");
-      const missing = f.missing.length ? `\n  Missing for them: ${f.missing.join("; ")}` : "";
-      return `<lead_feedback lead="${lead?.name ?? f.leadId}" title="${lead?.title ?? ""}" company="${lead?.company ?? ""}">\n${items}${missing}\n  Overall: ${f.overall}\n</lead_feedback>`;
+/** One lead's feedback for a round, with scores as they stand after any rebuttal. */
+function feedbackEntry(f: LeadFeedback, leads: Lead[]) {
+  const lead = leads.find((l) => l.id === f.leadId);
+  const scores = finalScores(f);
+  const items = f.items
+    .map((i) => {
+      const final = scores.get(i.featureId) ?? i.score;
+      const changed = final !== i.score ? ` (first said ${i.score}/5)` : "";
+      return `  - ${i.featureId}: ${final}/5${changed}, ${i.wouldUse ? "would use" : "would not use"}. ${i.comment}`;
     })
     .join("\n");
+  const rebuttal = f.rebuttal
+    ? `\n  After hearing the others: ${f.rebuttal.revised.map((r) => `${r.featureId}: ${r.comment}`).join(" ")} ${f.rebuttal.closing}`
+    : "";
+  const missing = f.missing.length ? `\n  Missing for them: ${f.missing.join("; ")}` : "";
+  return `<lead_feedback lead="${lead?.name ?? f.leadId}" title="${lead?.title ?? ""}" company="${lead?.company ?? ""}">\n${items}${missing}\n  Top pick: ${f.topPick}. Likelihood to buy if it shipped: ${f.adoptionLikelihood}/5\n  Overall: ${f.overall}${rebuttal}\n</lead_feedback>`;
 }
 
-// ---------- Developer agent ----------
+const feedbackDigest = (feedback: LeadFeedback[], leads: Lead[]) =>
+  feedback
+    .filter((f) => !f.error)
+    .map((f) => feedbackEntry(f, leads))
+    .join("\n");
+
+const UNATTENDED = `You are running unattended inside an automated pipeline, so there is nobody to answer questions. When a skill tells you to ask the user something, decide it yourself from the information you were given. When a skill mentions a connector or tool you do not have (a CRM, chat, a knowledge base), skip that part.`;
+
+// ---------- Persona brief agents (sales plugin skills) ----------
+
+export const BRIEF_SKILLS = ["account-research", "lead-triage", "stakeholder-map"];
+
+export const BRIEF_SYSTEM = `You are a sales researcher preparing a short brief on one lead, so that a simulated version of that lead can give realistic product feedback.
+
+You have three skills: account-research for understanding the lead's company, lead-triage for judging how well the lead fits the business's ideal customer, and stakeholder-map for working out the lead's role in a buying decision. Use the parts of them that help; their full output formats are not needed here, only the brief you return.
+
+${UNATTENDED}
+
+Research the company and what the role typically involves. Do not research the individual: no searching for the person by name, no personal or social-media details. If the company cannot be found or looks fictional, reason from its industry and size and say so in the company context.`;
+
+export function briefPrompt(p: Project, lead: Lead, web: boolean) {
+  return `${businessBrief(p)}
+<lead>
+${leadLine(lead)}
+</lead>
+
+Write the brief for this lead as a prospective customer of the business above. ${
+    web
+      ? "A few web searches about the company and its market are enough."
+      : "Web access is off for this run, so work from the profile and your own knowledge."
+  }`;
+}
+
+// ---------- Developer agent (product-management plugin skills) ----------
+
+export const DEVELOPER_SKILLS = ["competitive-brief", "product-brainstorming", "synthesize-research", "roadmap-update"];
 
 export const DEVELOPER_SYSTEM = `You are the product developer agent for a business. Your job is to work out which product features the business should build next, and to refine that list against feedback from its sales leads.
 
-You think like an experienced product lead: you look for real customer problems, you check what competitors already offer, you prefer a few well-argued features over a long wish list, and you are honest about effort and uncertainty. The leads you hear from are simulated from CRM data, so treat their feedback as a strong signal about fit, not as verified interview data.`;
+You think like an experienced product lead: you look for real customer problems, you check what competitors already offer, you prefer a few well-argued features over a long wish list, and you are honest about effort and uncertainty. The leads you hear from are simulated from CRM data, so treat their feedback as a strong signal about fit, not as verified interview data.
 
-export function researchPrompt(p: Project, web: boolean) {
+You have four skills from a product-management toolkit: competitive-brief, product-brainstorming, synthesize-research and roadmap-update. Each task says which ones apply. Use their methods and frameworks to do the thinking; the final answer is always the structured result the task asks for, not the document format the skill describes.
+
+${UNATTENDED}`;
+
+export function researchPrompt(p: Project, web: boolean, briefs: Record<string, PersonaBrief>) {
   return `${businessBrief(p)}
 <leads>
-${p.leads.map(leadLine).join("\n")}
+${leadsBlock(p, briefs)}
 </leads>
 
 Research what this business should develop next${p.focusArea.trim() ? ", concentrating on the focus area above" : ""}.
+
+Use the competitive-brief skill to structure the competitor analysis and the product-brainstorming skill to generate and pressure-test ideas.
 
 ${
   web
@@ -83,21 +143,32 @@ Here is the feature list the leads just reviewed (round ${round.round}):
 
 ${featureList(round.features)}
 
-Here is their feedback:
+Here is their feedback. Scores are where each lead ended up after hearing the others:
 
 ${feedbackDigest(round.feedback, p.leads)}
 
-Revise the feature list. Keep what resonated, sharpen or re-scope what got mixed reactions, drop what nobody wants, and add features the leads asked for when several of them would benefit. Keep the id of any feature that survives, even if reworded, and give new features new ids that have not been used before. Aim for 5 to 8 features.
+Use the synthesize-research skill to pull the themes out of this feedback, then revise the feature list. Keep what resonated, sharpen or re-scope what got mixed reactions, drop what nobody wants, and add features the leads asked for when several of them would benefit. Keep the id of any feature that survives, even if reworded, and give new features new ids that have not been used before. Aim for 5 to 8 features.
 
 Also write a short note to the leads saying what you changed because of their feedback and what you most want their view on in the next round.`;
 }
 
-export function rankingPrompt(p: Project, rounds: RunRound[]) {
+export function rankingPrompt(p: Project, rounds: RunRound[], insights: Pick<RunInsights, "themes" | "painPoints" | "requests">, teamCapacity: number) {
   const last = rounds[rounds.length - 1];
   const history = rounds
     .slice(0, -1)
     .map((r) => `Round ${r.round} feedback:\n${feedbackDigest(r.feedback, p.leads)}`)
     .join("\n\n");
+  const picks = new Map<string, number>();
+  for (const f of last.feedback) if (!f.error) picks.set(f.topPick, (picks.get(f.topPick) ?? 0) + 1);
+  const analysis = [
+    picks.size ? `First-choice votes: ${[...picks].map(([id, n]) => `${id} x${n}`).join(", ")}` : "",
+    insights.themes.length ? `Recurring themes in the feedback text: ${insights.themes.map((t) => `${t.name} (${t.count})`).join(", ")}` : "",
+    insights.painPoints.length ? `Pain points quoted: ${insights.painPoints.slice(0, 8).join(" | ")}` : "",
+    insights.requests.length ? `Requests quoted: ${insights.requests.slice(0, 8).join(" | ")}` : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+
   return `${businessBrief(p)}
 The feedback rounds are finished. Final feature list:
 
@@ -107,19 +178,25 @@ Final round feedback:
 
 ${feedbackDigest(last.feedback, p.leads)}
 
-${history ? `Earlier rounds, for context:\n\n${history}\n` : ""}
-Produce the prioritisation. For every feature in the final list give RICE inputs: reach (1-10, the share of this business's target customers it affects), impact (1-5, per customer), confidence (0-100 percent, lower when leads disagreed or evidence is thin) and effort in person-weeks. Explain each briefly, name the leads who most wanted it, and state the main concern raised. The score is computed from your inputs as reach x impact x confidence / effort, so make the inputs reflect your actual judgement.
+${history ? `Earlier rounds, for context:\n\n${history}\n` : ""}${analysis ? `Automated analysis of the feedback:\n${analysis}\n` : ""}
+Produce the prioritisation, using the roadmap-update skill's prioritisation guidance. For every feature in the final list give RICE inputs:
+- reach: your estimate of how many of this business's customers and prospects it affects per quarter, as a number.
+- impact: massive, high, medium, low or minimal, per affected customer.
+- confidence: high, medium or low. Use lower confidence when leads disagreed or the evidence is thin.
+- effort: xs (about 1 person-month), s (3), m (5), l (8) or xl (13).
+
+A script computes the score from your inputs as reach x impact x confidence / effort and lays the features out quarter by quarter against a team capacity of ${teamCapacity} person-months per quarter, so make the inputs reflect your actual judgement. Explain each feature briefly, name the leads who most wanted it, and state the main concern raised.
 
 Finish with a short recommendation of what to build next and why, including anything you would validate with real customers first.`;
 }
 
-// ---------- Lead agents ----------
+// ---------- Lead agents (no tools, no skills: an isolated, in-character reaction) ----------
 
-export function leadSystem(p: Project, lead: Lead) {
+export function leadSystem(p: Project, lead: Lead, brief?: PersonaBrief) {
   return `You are role-playing a specific sales lead of a business, to give its product team realistic customer feedback.
 
 You are: ${leadLine(lead)}
-
+${brief ? `\nBackground research on your company and role:\n${briefText(brief)}\n` : ""}
 The business asking for your feedback:
 ${businessBrief(p)}
 Stay in character and answer in the first person. Reason from what someone with your role, at a company like yours, actually cares about: your goals, your budget and time pressures, the tools you already use, and what you would have to justify internally. Be candid. Low scores are as useful as high ones, and a feature that is irrelevant to you should be scored as irrelevant, since the team needs to know where demand is weak. Where the profile gives you little to go on, make the most plausible assumption for that role and industry rather than inventing specific facts about the real person.`;
@@ -134,5 +211,24 @@ export function leadPrompt(round: RunRound, previous?: LeadFeedback) {
 
 ${featureList(round.features)}
 
-Give your reaction to every feature, using its id: a score from 1 (no value to me) to 5 (I need this), whether you would actually use it, and a short comment. Then list anything you would want that is missing, and give your overall take.`;
+Give your reaction to every feature, using its id: a score from 1 (no value to me) to 5 (I need this), whether you would actually use it, and a short comment. List anything you would want that is missing, and give your overall take.
+
+Then answer three things a concept test would ask: which single feature you would pick if only one could be built, how likely you would be to buy or expand if that one shipped, and one sentence in your own voice that sums up your reaction.`;
+}
+
+export function rebuttalPrompt(round: RunRound, own: LeadFeedback, leads: Lead[]) {
+  const others = round.feedback.filter((f) => !f.error && f.leadId !== own.leadId);
+  return `You gave your reaction to the round ${round.round} features. Here is what you said:
+
+${feedbackEntry(own, leads)}
+
+The other leads the product team consulted said this:
+
+${others.map((f) => feedbackEntry(f, leads)).join("\n")}
+
+For reference, the features:
+
+${featureList(round.features)}
+
+Having heard them, has anything changed for you? Other customers sometimes raise a use or a risk you had not considered, and sometimes they want things that would make the product worse for you. List only the features where you now score differently, or where you disagree with another lead strongly enough to say so, with your score and reason. If your view stands, return no revisions. End with a short closing statement. Hold your own position where it reflects your real needs; agreeing for the sake of agreement helps nobody.`;
 }

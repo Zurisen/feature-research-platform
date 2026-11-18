@@ -86,6 +86,18 @@ export default function SettingsPage() {
               <input type="checkbox" checked={settings.webResearch} onChange={(e) => save({ ...settings, webResearch: e.target.checked })} />
               Let the developer agent search the web during research
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.personaBriefs} onChange={(e) => save({ ...settings, personaBriefs: e.target.checked })} />
+              Research each lead&apos;s company and role first (persona briefs, one extra agent per lead)
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.debate} onChange={(e) => save({ ...settings, debate: e.target.checked })} />
+              Let leads react to each other&apos;s feedback (doubles the lead agent calls)
+            </label>
+            <div className="max-w-xs">
+              <label className="label" htmlFor="cap">Team capacity (person-months per quarter)</label>
+              <input id="cap" type="number" min={1} max={200} className="input" value={settings.teamCapacity} onChange={(e) => save({ ...settings, teamCapacity: Math.max(1, Math.min(200, Number(e.target.value) || 1)) })} />
+            </div>
           </>
         )}
       </section>
