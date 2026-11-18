@@ -7,7 +7,7 @@ const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "LeadLoop",
+  title: "Feature Research Platform",
   description: "Decide what to build next, with a developer agent and one agent per sales lead.",
 };
 
@@ -18,7 +18,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <header className="border-b border-border bg-surface">
           <nav className="mx-auto flex max-w-5xl items-center gap-6 px-4 py-3">
             <Link href="/" className="text-base font-semibold">
-              LeadLoop
+              Feature Research Platform
             </Link>
             <Link href="/" className="text-sm text-muted hover:text-text">
               Projects

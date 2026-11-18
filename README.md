@@ -1,4 +1,4 @@
-# LeadLoop
+# Feature Research Platform
 
 Decide what to build next. A developer agent researches feature ideas for a business, one agent per sales lead reacts to them over several rounds, and the developer agent produces a ranked list.
 

@@ -9,8 +9,8 @@ import { Project, ProjectInput, Run, Settings, SettingsSchema } from "./types";
 export const DATA_DIR = path.join(process.cwd(), "data");
 const RUNS_DIR = path.join(DATA_DIR, "runs");
 
-const g = globalThis as unknown as { __leadloopLocks?: Map<string, Promise<unknown>> };
-const locks = (g.__leadloopLocks ??= new Map());
+const g = globalThis as unknown as { __frpLocks?: Map<string, Promise<unknown>> };
+const locks = (g.__frpLocks ??= new Map());
 
 function withLock<T>(key: string, fn: () => Promise<T>): Promise<T> {
   const prev = locks.get(key) ?? Promise.resolve();

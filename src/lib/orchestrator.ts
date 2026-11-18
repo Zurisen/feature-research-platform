@@ -27,8 +27,8 @@ import {
 //   developer researches -> [leads give feedback -> developer revises] x rounds -> developer ranks.
 // Runs execute in this Node process and are persisted to data/runs after every step; the UI polls.
 
-const g = globalThis as unknown as { __leadloopActive?: Map<string, AbortController> };
-const active = (g.__leadloopActive ??= new Map());
+const g = globalThis as unknown as { __frpActive?: Map<string, AbortController> };
+const active = (g.__frpActive ??= new Map());
 
 export const isActive = (id: string) => active.has(id);
 
