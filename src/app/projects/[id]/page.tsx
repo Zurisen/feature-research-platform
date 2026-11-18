@@ -57,7 +57,10 @@ export default function ProjectPage() {
             {p.business.name} · {p.source === "apollo" ? "from Apollo" : "entered manually"} · {fmtDate(p.createdAt)}
           </p>
         </div>
-        <button className="btn btn-danger" onClick={remove}>Delete project</button>
+        <div className="flex gap-2">
+          <Link href={`/projects/${id}/edit`} className="btn">Edit project</Link>
+          <button className="btn btn-danger" onClick={remove}>Delete project</button>
+        </div>
       </div>
 
       <section className="card space-y-4">

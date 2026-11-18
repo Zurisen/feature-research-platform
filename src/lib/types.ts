@@ -37,6 +37,20 @@ export type ProjectInput = z.infer<typeof ProjectInputSchema>;
 
 export type Project = ProjectInput & { id: string; createdAt: string };
 
+/** Schema check plus the rules on leads, shared by create and update. */
+export function validateProjectInput(body: unknown): { input: ProjectInput } | { error: string } {
+  const parsed = ProjectInputSchema.safeParse(body);
+  if (!parsed.success) return { error: parsed.error.issues[0]?.message ?? "Invalid project" };
+  const input = parsed.data;
+  const min = input.source === "manual" ? MIN_MANUAL_LEADS : 1;
+  if (input.leads.length < min) return { error: `Add at least ${min} lead${min > 1 ? "s" : ""}.` };
+  if (input.leads.some((l) => !l.title.trim() && !l.notes.trim())) {
+    return { error: "Every lead needs at least a job title or a description." };
+  }
+  if (new Set(input.leads.map((l) => l.id)).size !== input.leads.length) return { error: "Two leads share the same id." };
+  return { input };
+}
+
 // ---------- Settings ----------
 
 export const MODELS = [

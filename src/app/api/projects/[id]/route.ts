@@ -1,5 +1,6 @@
 import { reconcile } from "@/lib/orchestrator";
-import { deleteProject, getProject, listRuns } from "@/lib/store";
+import { deleteProject, getProject, listRuns, updateProject } from "@/lib/store";
+import { validateProjectInput } from "@/lib/types";
 
 export async function GET(_req: Request, ctx: RouteContext<"/api/projects/[id]">) {
   const { id } = await ctx.params;
@@ -18,6 +19,15 @@ export async function GET(_req: Request, ctx: RouteContext<"/api/projects/[id]">
       rounds: r.settings.rounds,
     })),
   });
+}
+
+export async function PUT(req: Request, ctx: RouteContext<"/api/projects/[id]">) {
+  const { id } = await ctx.params;
+  const checked = validateProjectInput(await req.json());
+  if ("error" in checked) return Response.json({ error: checked.error }, { status: 400 });
+  const project = await updateProject(id, checked.input);
+  if (!project) return Response.json({ error: "Project not found" }, { status: 404 });
+  return Response.json(project);
 }
 
 export async function DELETE(_req: Request, ctx: RouteContext<"/api/projects/[id]">) {

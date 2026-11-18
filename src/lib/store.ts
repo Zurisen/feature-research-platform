@@ -56,6 +56,17 @@ export function createProject(input: ProjectInput) {
   });
 }
 
+export function updateProject(id: string, input: ProjectInput) {
+  return withLock(PROJECTS, async () => {
+    const all = await listProjects();
+    const current = all.find((p) => p.id === id);
+    if (!current) return null;
+    const updated: Project = { ...input, id, createdAt: current.createdAt };
+    await writeJson(PROJECTS, all.map((p) => (p.id === id ? updated : p)));
+    return updated;
+  });
+}
+
 export function deleteProject(id: string) {
   return withLock(PROJECTS, async () => {
     const all = await listProjects();
