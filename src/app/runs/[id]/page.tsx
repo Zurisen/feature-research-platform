@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import NotesPanel from "@/components/NotesPanel";
 import RankingChart from "@/components/RankingChart";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api } from "@/lib/client";
@@ -43,7 +44,8 @@ export default function RunPage() {
         if (stop) return;
         setData(d);
         setError("");
-        if (d.run.status === "running") timer = setTimeout(tick, 2000);
+        // Keep polling while the run works, or while a note is still with the liaison agent.
+        if (d.run.status === "running" || d.run.notes?.some((n) => n.status === "processing")) timer = setTimeout(tick, 2000);
       } catch (e) {
         if (stop) return;
         setError((e as Error).message);
@@ -139,6 +141,8 @@ export default function RunPage() {
           </div>
         </details>
       )}
+
+      <NotesPanel run={run} onSent={() => setTick((t) => t + 1)} />
 
       {run.ranking && (
         <section className="card space-y-4">

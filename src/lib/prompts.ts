@@ -1,4 +1,4 @@
-import { Critique, Feature, finalPoints, finalScores, Lead, LeadFeedback, PersonaBrief, POINT_BUDGET, Project, RunInsights, RunRound } from "./types";
+import { Critique, Feature, finalPoints, finalScores, Lead, LeadFeedback, PersonaBrief, POINT_BUDGET, Project, Run, RunInsights, RunNote, RunRound } from "./types";
 
 const line = (label: string, v: string) => (v.trim() ? `${label}: ${v.trim()}\n` : "");
 
@@ -307,4 +307,44 @@ For reference, the features:
 ${featureList(round.features)}
 
 Having heard them, has anything changed for you? Other customers sometimes raise a use or a risk you had not considered, and sometimes they want things that would make the product worse for you. List only the features where you now score differently, or where you disagree with another lead strongly enough to say so, with your score and reason. If your view stands, return no revisions. If you would now spend your ${POINT_BUDGET}-point budget differently, give your full new allocation across the features (still adding up to ${POINT_BUDGET}); otherwise leave the reallocation empty. End with a short closing statement. Hold your own position where it reflects your real needs; agreeing for the sake of agreement helps nobody.`;
+}
+
+// ---------- Liaison agent: between the person watching the run and the other agents ----------
+
+export const LIAISON_SYSTEM = `You are the liaison between a product owner, who is watching an automated product-research run, and the agents doing the work: a developer agent that proposes and ranks features, and lead agents that role-play sales leads and react to those features.
+
+The product owner types short notes while the run is going: corrections, constraints, ideas, questions, doubts about a result. The notes are written quickly and lean on what the owner can see on screen. Your job is to turn each note into something the agents can act on without having seen the screen: say what the owner means, fill in the context the note takes for granted (which feature, which lead, which result), and restate it as clear guidance.
+
+Keep to what the owner said. Do not add opinions, requirements or facts of your own, and do not soften or strengthen the note. If it can be read two ways, pick the reading the run's current state makes most likely and say in the interpretation that you did.
+
+Split the guidance by audience. The developer agent gets instructions and context. The lead agents are simulated customers, so they must not be told what the owner hopes to hear: pass them only genuine questions or neutral facts (for example a price point, a constraint, a clarification of what a feature does), worded so they do not lead. Most notes concern only the developer agent; leave the part for leads empty unless the owner wants something asked of or told to the leads.`;
+
+export function liaisonPrompt(p: Project, run: Run, note: string, earlier: RunNote[]) {
+  const last = run.rounds[run.rounds.length - 1];
+  const ranking = run.ranking?.map((x) => `${x.rank}. ${x.featureId} ${x.title} (score ${x.rice})`).join("\n");
+  const prior = earlier.filter((n) => n.status === "ready" && n.brief).map((n) => `- ${n.brief!.interpretation}`).join("\n");
+  return `${businessBrief(p)}
+The leads in this run: ${p.leads.map((l) => l.name || l.title).join("; ")}
+
+Where the run is now: ${run.phase} (status: ${run.status}; round ${run.rounds.length} of ${run.settings.rounds}).
+${last ? `\nCurrent feature list:\n\n${featureList(last.features)}\n` : "\nNo features have been proposed yet.\n"}${
+    last && last.feedback.some((f) => !f.error) ? `\nLead feedback so far in this round:\n\n${feedbackDigest(last.feedback, p.leads)}\n` : ""
+  }${ranking ? `\nCurrent ranking:\n${ranking}\n` : ""}${prior ? `\nEarlier notes from the product owner, already passed on:\n${prior}\n` : ""}
+The product owner's new note:
+
+<note>
+${note}
+</note>
+
+Restate it for the agents.`;
+}
+
+/** Guidance block appended to an agent's prompt; empty when there is nothing for that audience. */
+export function guidanceBlock(notes: RunNote[], audience: "developer" | "leads") {
+  const lines = notes.map((n) => (audience === "developer" ? n.brief?.forDeveloper : n.brief?.forLeads)?.trim()).filter((x): x is string => !!x);
+  if (lines.length === 0) return "";
+  const list = lines.map((l, i) => `${i + 1}. ${l}`).join("\n");
+  return audience === "developer"
+    ? `\n\n<product_owner_guidance>\nThe product owner is following this run and has sent the guidance below, oldest first. It comes from the person who owns the decision, so follow it. Where it conflicts with what the leads want, keep to the guidance and say plainly that the leads wanted otherwise.\n${list}\n</product_owner_guidance>`
+    : `\n\nThe product team has also asked you to take this into account in your answer:\n${list}`;
 }

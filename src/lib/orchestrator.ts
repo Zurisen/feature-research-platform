@@ -6,7 +6,10 @@ import {
   briefPrompt,
   DEVELOPER_SKILLS,
   DEVELOPER_SYSTEM,
+  guidanceBlock,
   leadPrompt,
+  LIAISON_SYSTEM,
+  liaisonPrompt,
   leadSystem,
   rankingPrompt,
   rebuttalPrompt,
@@ -25,6 +28,7 @@ import {
   Lead,
   LeadFeedback,
   LeadFeedbackOutputSchema,
+  NoteBriefSchema,
   PersonaBriefSchema,
   POINT_BUDGET,
   Project,
@@ -37,6 +41,7 @@ import {
   Run,
   RunEvent,
   RunInsights,
+  RunNote,
   RunRound,
   Settings,
   SettingsSchema,
@@ -52,8 +57,11 @@ import {
 // is still missing. That is what lets a failed or interrupted run resume, and a finished run take
 // another round. Runs execute in this Node process; the UI polls.
 
-const g = globalThis as unknown as { __frpActive?: Map<string, AbortController> };
+const g = globalThis as unknown as { __frpActive?: Map<string, AbortController>; __frpLive?: Map<string, Run> };
 const active = (g.__frpActive ??= new Map());
+// The in-memory object of each run in progress. Anything that changes a running run (notes) must
+// change this object, because the run loop saves it over the file after every step.
+const live = (g.__frpLive ??= new Map());
 
 export const isActive = (id: string) => active.has(id);
 
@@ -84,7 +92,65 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
 function launch(run: Run, project: Project) {
   const controller = new AbortController();
   active.set(run.id, controller);
-  void execute(run, project, controller.signal).finally(() => active.delete(run.id));
+  live.set(run.id, run);
+  void execute(run, project, controller.signal).finally(() => {
+    active.delete(run.id);
+    live.delete(run.id);
+  });
+}
+
+async function mutateRun(id: string, fn: (run: Run) => void) {
+  const run = live.get(id) ?? (await getRun(id));
+  if (!run) return;
+  fn(run);
+  await saveRun(run);
+}
+
+/**
+ * A note from the person watching the run. A liaison agent restates it with the run's context and
+ * splits it by audience; the run loop then hands it to every later developer and lead step.
+ */
+export async function addNote(id: string, text: string): Promise<{ error?: string; note?: RunNote }> {
+  const run = live.get(id) ?? (await getRun(id));
+  if (!run) return { error: "Run not found." };
+  const project = await getProject(run.projectId);
+  if (!project) return { error: "The project for this run no longer exists." };
+  const note: RunNote = { id: newId(), ts: new Date().toISOString(), text, status: "processing", usedIn: [] };
+  const earlier = [...(run.notes ?? [])];
+  (run.notes ??= []).push(note);
+  run.events.push({ ts: note.ts, agent: "you", kind: "status", text: `Note: ${text.length > 140 ? `${text.slice(0, 140)}…` : text}` });
+  await saveRun(run);
+
+  void (async () => {
+    try {
+      const settings = SettingsSchema.parse(run.settings);
+      const r = await runAgent({
+        system: LIAISON_SYSTEM,
+        prompt: liaisonPrompt(project, run, text, earlier),
+        schema: NoteBriefSchema,
+        model: settings.developerModel,
+        authMode: settings.authMode,
+        signal: new AbortController().signal,
+      });
+      await mutateRun(id, (cur) => {
+        const n = cur.notes?.find((x) => x.id === note.id);
+        if (!n) return;
+        n.status = "ready";
+        n.brief = r.data;
+        cur.costUsd += r.costUsd;
+        cur.events.push({ ts: new Date().toISOString(), agent: "liaison", kind: "status", text: `Passed on: ${r.data.interpretation}` });
+      });
+    } catch (e) {
+      await mutateRun(id, (cur) => {
+        const n = cur.notes?.find((x) => x.id === note.id);
+        if (!n) return;
+        n.status = "failed";
+        n.error = (e as Error).message;
+        cur.events.push({ ts: new Date().toISOString(), agent: "liaison", kind: "error", text: `Could not process the note: ${n.error}` });
+      });
+    }
+  })();
+  return { note };
 }
 
 export async function startRun(project: Project, settings: Settings): Promise<Run> {
@@ -176,8 +242,20 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
     run.costUsd += r.costUsd;
     return r.data;
   };
-  const developer = <T,>(prompt: string, schema: z.ZodType<T>, web = false) =>
-    call({ agent: "developer", system: DEVELOPER_SYSTEM, prompt, schema, model: s.developerModel, web, skills: DEV_SKILLS });
+  /** The owner's notes that are ready for this audience, recorded as used by this step. */
+  const guidance = (audience: "developer" | "leads", step: string) => {
+    const ready = (run.notes ?? []).filter((n) => n.status === "ready" && n.brief);
+    const block = guidanceBlock(ready, audience);
+    if (block) {
+      for (const n of ready) {
+        const part = audience === "developer" ? n.brief!.forDeveloper : n.brief!.forLeads;
+        if (part.trim() && !n.usedIn.includes(step)) n.usedIn.push(step);
+      }
+    }
+    return block;
+  };
+  const developer = <T,>(step: string, prompt: string, schema: z.ZodType<T>, web = false) =>
+    call({ agent: "developer", system: DEVELOPER_SYSTEM, prompt: prompt + guidance("developer", step), schema, model: s.developerModel, web, skills: DEV_SKILLS });
 
   /** Runs one step for every lead in parallel; a single lead failing does not sink the step. */
   const eachLead = (leads: Lead[], what: string, fn: (lead: Lead) => Promise<void>) =>
@@ -224,7 +302,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
     // 1. Research (done once the first round exists)
     if (run.rounds.length === 0) {
       phase(`Developer agent is researching${s.webResearch ? " (with web search)" : ""}`);
-      const research = await developer(researchPrompt(project, s.webResearch, briefs), ResearchOutputSchema, s.webResearch);
+      const research = await developer("research", researchPrompt(project, s.webResearch, briefs), ResearchOutputSchema, s.webResearch);
       run.research = research.researchSummary;
       run.rounds.push({ round: 1, features: research.features, feedback: [] });
       log("developer", "status", `Proposed ${research.features.length} candidate features`);
@@ -237,7 +315,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       const previousRound = run.rounds[r - 2];
       const known = new Set(round.features.map((f) => f.id));
       const leadCall = <T,>(lead: Lead, prompt: string, schema: z.ZodType<T>) =>
-        call({ agent: leadLabel(lead), system: leadSystem(project, lead, briefs[lead.id]), prompt, schema, model: s.leadModel });
+        call({ agent: leadLabel(lead), system: leadSystem(project, lead, briefs[lead.id]), prompt: prompt + guidance("leads", `round ${r} leads`), schema, model: s.leadModel });
 
       // 2a. Positions: each lead reacts on their own.
       const waiting = project.leads.filter((l) => !round.feedback.some((f) => f.leadId === l.id));
@@ -286,7 +364,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       // 2c. Revision (done once the next round exists)
       if (r < s.rounds && !run.rounds[r]) {
         phase(`Developer agent is revising the features after round ${r}`);
-        const rev = await developer(revisionPrompt(project, round), RevisionOutputSchema);
+        const rev = await developer(`revision after round ${r}`, revisionPrompt(project, round), RevisionOutputSchema);
         run.rounds.push({ round: r + 1, features: rev.features, noteToLeads: rev.noteToLeads, changelog: rev.changelog, feedback: [] });
         log("developer", "status", `Revised the list to ${rev.features.length} features`);
       }
@@ -309,7 +387,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       // 3a. Draft
       if (!run.draftRanking) {
         phase("Developer agent is ranking the features");
-        const draft = await developer(rankingPrompt(project, run.rounds, insights, s.teamCapacity), RankingOutputSchema);
+        const draft = await developer("draft ranking", rankingPrompt(project, run.rounds, insights, s.teamCapacity), RankingOutputSchema);
         run.draftRanking = draft.ranked;
         run.summary = draft.summary;
         await save();
@@ -327,7 +405,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
           const critique = await call({
             agent: "sceptic",
             system: SCEPTIC_SYSTEM,
-            prompt: scepticPrompt(project, run.rounds, briefs, draftText),
+            prompt: scepticPrompt(project, run.rounds, briefs, draftText) + guidance("developer", "sceptic's challenge"),
             schema: CritiqueSchema,
             model: s.developerModel,
           });
@@ -337,6 +415,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
         }
         phase("Developer agent is answering the sceptic and finalising the ranking");
         const fin = await developer(
+          "final ranking",
           rankingPrompt(project, run.rounds, insights, s.teamCapacity, { critique: run.critique, draft: draftText }),
           FinalRankingOutputSchema,
         );

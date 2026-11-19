@@ -251,6 +251,29 @@ export type RunInsights = {
   requests: string[];
 };
 
+// ---------- Notes from the person watching a run ----------
+
+export const NoteBriefSchema = z.object({
+  interpretation: z.string().describe("One or two sentences: what the product owner means, in plain words, with the context they left implicit filled in."),
+  forDeveloper: z
+    .string()
+    .describe("The guidance restated for the developer agent as a clear instruction with the needed context. Empty string if nothing here concerns the developer agent."),
+  forLeads: z
+    .string()
+    .describe("Only what should be put to the leads, as a neutral question or a piece of information that does not push them towards an answer. Empty string if nothing should reach the leads."),
+});
+export type NoteBrief = z.infer<typeof NoteBriefSchema>;
+
+export type RunNote = {
+  id: string;
+  ts: string;
+  text: string; // what the person typed
+  status: "processing" | "ready" | "failed";
+  brief?: NoteBrief; // the liaison agent's restatement
+  error?: string;
+  usedIn: string[]; // steps that have received it so far
+};
+
 // ---------- Runs ----------
 
 export type RunEvent = {
@@ -283,6 +306,7 @@ export type Run = {
   draftRanking?: RankingOutput["ranked"]; // the developer agent's inputs before the sceptic's challenge
   critique?: Critique;
   critiqueResponse?: string;
+  notes?: RunNote[];
   ranking?: RankedFeature[];
   summary?: string;
   costUsd: number;
