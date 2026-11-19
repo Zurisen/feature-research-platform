@@ -12,16 +12,21 @@ import {
   rebuttalPrompt,
   researchPrompt,
   revisionPrompt,
+  SCEPTIC_SYSTEM,
+  scepticPrompt,
 } from "./prompts";
-import { getRun, newId, saveRun } from "./store";
+import { getProject, getRun, getSavedBriefs, newId, saveBrief, saveRun } from "./store";
 import { builtInRice, EFFORT_MONTHS, runToolkit, ToolkitFeature, ToolkitResult } from "./toolkit";
 import {
-  Feature,
+  CritiqueSchema,
+  FinalRankingOutputSchema,
+  finalPoints,
   finalScores,
   Lead,
   LeadFeedback,
   LeadFeedbackOutputSchema,
   PersonaBriefSchema,
+  POINT_BUDGET,
   Project,
   RankedFeature,
   RankingOutput,
@@ -34,13 +39,18 @@ import {
   RunInsights,
   RunRound,
   Settings,
+  SettingsSchema,
 } from "./types";
 
 // Run flow:
-//   persona briefs (optional) -> developer researches
+//   persona briefs (optional, reused from earlier runs) -> developer researches
 //   -> [leads give positions -> leads react to each other (optional) -> developer revises] x rounds
-//   -> feedback text analysis + developer gives RICE inputs -> script scores and lays out the roadmap.
-// Runs execute in this Node process and are persisted to data/runs after every step; the UI polls.
+//   -> developer drafts the ranking -> sceptic challenges it (optional) -> developer finalises
+//   -> script scores the inputs and lays out the roadmap.
+//
+// Every step is saved to data/runs as it finishes, and execute() only does the steps the saved run
+// is still missing. That is what lets a failed or interrupted run resume, and a finished run take
+// another round. Runs execute in this Node process; the UI polls.
 
 const g = globalThis as unknown as { __frpActive?: Map<string, AbortController> };
 const active = (g.__frpActive ??= new Map());
@@ -51,11 +61,11 @@ export function cancelRun(id: string) {
   active.get(id)?.abort();
 }
 
-/** Marks a run that was left "running" by a server restart as failed. */
+/** A run left "running" by a server restart is marked failed; it can be resumed from its last saved step. */
 export async function reconcile(run: Run): Promise<Run> {
   if (run.status === "running" && !isActive(run.id)) {
     run.status = "failed";
-    run.error = "The server restarted while this run was in progress.";
+    run.error = "The server restarted while this run was in progress. Resume it to continue from the last completed step.";
     run.finishedAt = new Date().toISOString();
     await saveRun(run);
   }
@@ -71,6 +81,12 @@ async function mapLimit<T>(items: T[], limit: number, fn: (item: T) => Promise<v
   );
 }
 
+function launch(run: Run, project: Project) {
+  const controller = new AbortController();
+  active.set(run.id, controller);
+  void execute(run, project, controller.signal).finally(() => active.delete(run.id));
+}
+
 export async function startRun(project: Project, settings: Settings): Promise<Run> {
   const run: Run = {
     id: newId(),
@@ -84,10 +100,47 @@ export async function startRun(project: Project, settings: Settings): Promise<Ru
     events: [],
   };
   await saveRun(run);
-  const controller = new AbortController();
-  active.set(run.id, controller);
-  void execute(run, project, controller.signal).finally(() => active.delete(run.id));
+  launch(run, project);
   return run;
+}
+
+/** Continues a failed or cancelled run from its last saved step, or adds one more feedback round to a finished run. */
+export async function resumeRun(id: string, opts: { addRound?: boolean }): Promise<{ error?: string }> {
+  if (isActive(id)) return { error: "This run is already in progress." };
+  const run = await getRun(id);
+  if (!run) return { error: "Run not found." };
+  const project = await getProject(run.projectId);
+  if (!project) return { error: "The project for this run no longer exists." };
+  run.settings = SettingsSchema.parse(run.settings); // runs saved by older versions lack newer settings
+
+  if (opts.addRound) {
+    if (run.status !== "completed") return { error: "Only a completed run can take another round." };
+    if (run.settings.rounds >= 5) return { error: "This run already has the maximum of 5 rounds." };
+    run.settings.rounds += 1;
+    // The ranking is redone after the extra round.
+    delete run.ranking;
+    delete run.draftRanking;
+    delete run.critique;
+    delete run.critiqueResponse;
+    delete run.insights;
+    delete run.summary;
+  } else if (run.status !== "failed" && run.status !== "cancelled") {
+    return { error: "Only a failed or cancelled run can be resumed." };
+  }
+
+  for (const round of run.rounds) round.feedback = round.feedback.filter((f) => !f.error); // failed leads get another try
+  run.status = "running";
+  delete run.error;
+  delete run.finishedAt;
+  run.events.push({
+    ts: new Date().toISOString(),
+    agent: "system",
+    kind: "status",
+    text: opts.addRound ? `Adding round ${run.settings.rounds}` : "Resuming from the last completed step",
+  });
+  await saveRun(run);
+  launch(run, project);
+  return {};
 }
 
 const DEV_SKILLS: AgentSkills = { plugin: "product-management", names: DEVELOPER_SKILLS };
@@ -140,117 +193,174 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
 
   try {
     // 0. Persona briefs
-    run.briefs = {};
+    const briefs = (run.briefs ??= {});
     if (s.personaBriefs) {
-      phase(`Researching ${project.leads.length} leads to build persona briefs`);
-      await eachLead(project.leads, "Persona brief", async (lead) => {
-        run.briefs![lead.id] = await call({
-          agent: `${leadLabel(lead)} (brief)`,
-          system: BRIEF_SYSTEM,
-          prompt: briefPrompt(project, lead, s.webResearch),
-          schema: PersonaBriefSchema,
-          model: s.developerModel,
-          web: s.webResearch,
-          skills: SALES_SKILLS,
+      if (s.reuseBriefs && project.leads.some((l) => !briefs[l.id])) {
+        const saved = await getSavedBriefs(project);
+        const reused = project.leads.filter((l) => !briefs[l.id] && saved[l.id]);
+        reused.forEach((l) => (briefs[l.id] = saved[l.id]));
+        if (reused.length) log("system", "status", `Reused ${reused.length} saved persona brief${reused.length > 1 ? "s" : ""} from earlier runs`);
+      }
+      const missing = project.leads.filter((l) => !briefs[l.id]);
+      if (missing.length) {
+        phase(`Researching ${missing.length} lead${missing.length > 1 ? "s" : ""} to build persona briefs`);
+        await eachLead(missing, "Persona brief", async (lead) => {
+          const brief = await call({
+            agent: `${leadLabel(lead)} (brief)`,
+            system: BRIEF_SYSTEM,
+            prompt: briefPrompt(project, lead, s.webResearch),
+            schema: PersonaBriefSchema,
+            model: s.developerModel,
+            web: s.webResearch,
+            skills: SALES_SKILLS,
+          });
+          briefs[lead.id] = brief;
+          await saveBrief(project, lead, brief);
+          log(leadLabel(lead), "status", `Persona brief ready (${brief.buyingRole}, ${brief.fit} fit)`);
         });
-        log(leadLabel(lead), "status", `Persona brief ready (${run.briefs![lead.id].buyingRole}, ${run.briefs![lead.id].fit} fit)`);
-      });
+      }
     }
 
-    // 1. Research
-    phase(`Developer agent is researching${s.webResearch ? " (with web search)" : ""}`);
-    const research = await developer(researchPrompt(project, s.webResearch, run.briefs), ResearchOutputSchema, s.webResearch);
-    run.research = research.researchSummary;
-    let features: Feature[] = research.features;
-    let noteToLeads: string | undefined;
-    let changelog: string | undefined;
-    log("developer", "status", `Proposed ${features.length} candidate features`);
+    // 1. Research (done once the first round exists)
+    if (run.rounds.length === 0) {
+      phase(`Developer agent is researching${s.webResearch ? " (with web search)" : ""}`);
+      const research = await developer(researchPrompt(project, s.webResearch, briefs), ResearchOutputSchema, s.webResearch);
+      run.research = research.researchSummary;
+      run.rounds.push({ round: 1, features: research.features, feedback: [] });
+      log("developer", "status", `Proposed ${research.features.length} candidate features`);
+    }
 
     // 2. Feedback rounds
     for (let r = 1; r <= s.rounds; r++) {
-      const round: RunRound = { round: r, features, noteToLeads, changelog, feedback: [] };
-      run.rounds.push(round);
+      const round = run.rounds[r - 1];
+      if (!round) throw new Error(`Round ${r} was never prepared; this run cannot be continued.`);
       const previousRound = run.rounds[r - 2];
-      const known = new Set(features.map((f) => f.id));
+      const known = new Set(round.features.map((f) => f.id));
       const leadCall = <T,>(lead: Lead, prompt: string, schema: z.ZodType<T>) =>
-        call({ agent: leadLabel(lead), system: leadSystem(project, lead, run.briefs?.[lead.id]), prompt, schema, model: s.leadModel });
+        call({ agent: leadLabel(lead), system: leadSystem(project, lead, briefs[lead.id]), prompt, schema, model: s.leadModel });
 
       // 2a. Positions: each lead reacts on their own.
-      phase(`Round ${r} of ${s.rounds}: ${project.leads.length} lead agents are reviewing the features`);
-      await mapLimit(project.leads, s.concurrency, async (lead) => {
-        let fb: LeadFeedback;
-        try {
-          const data = await leadCall(
-            lead,
-            leadPrompt(round, previousRound?.feedback.find((f) => f.leadId === lead.id && !f.error)),
-            LeadFeedbackOutputSchema,
-          );
-          fb = { ...data, items: data.items.filter((i) => known.has(i.featureId)), leadId: lead.id };
-          log(leadLabel(lead), "status", `Gave feedback on ${fb.items.length} features, top pick ${fb.topPick}`);
-        } catch (e) {
-          if (signal.aborted) throw e;
-          fb = { leadId: lead.id, items: [], missing: [], overall: "", topPick: "", adoptionLikelihood: 1, quote: "", error: (e as Error).message };
-          log(leadLabel(lead), "error", `Feedback failed: ${fb.error}`);
-        }
-        round.feedback.push(fb);
-        await save();
-      });
+      const waiting = project.leads.filter((l) => !round.feedback.some((f) => f.leadId === l.id));
+      if (waiting.length) {
+        phase(`Round ${r} of ${s.rounds}: ${waiting.length} lead agents are reviewing the features`);
+        await mapLimit(waiting, s.concurrency, async (lead) => {
+          let fb: LeadFeedback;
+          try {
+            const data = await leadCall(
+              lead,
+              leadPrompt(round, previousRound?.feedback.find((f) => f.leadId === lead.id && !f.error)),
+              LeadFeedbackOutputSchema,
+            );
+            fb = { ...data, items: data.items.filter((i) => known.has(i.featureId)), leadId: lead.id };
+            log(leadLabel(lead), "status", `Gave feedback on ${fb.items.length} features, top pick ${fb.topPick}`);
+          } catch (e) {
+            if (signal.aborted) throw e;
+            fb = { leadId: lead.id, items: [], missing: [], overall: "", topPick: "", adoptionLikelihood: 1, quote: "", error: (e as Error).message };
+            log(leadLabel(lead), "error", `Feedback failed: ${fb.error}`);
+          }
+          round.feedback.push(fb);
+          await save();
+        });
+      }
       const responded = round.feedback.filter((f) => !f.error);
       if (responded.length === 0) throw new Error("Every lead agent failed in this round; see the activity log.");
 
-      // 2b. Rebuttal: each lead sees the others' positions and may revise.
-      if (s.debate && responded.length > 1) {
+      // 2b. Rebuttal: each lead sees the others' first positions and may revise.
+      const toReact = s.debate && responded.length > 1 ? project.leads.filter((l) => responded.some((f) => f.leadId === l.id && !f.rebuttal)) : [];
+      if (toReact.length) {
         phase(`Round ${r} of ${s.rounds}: leads are reacting to each other's feedback`);
-        const positions: RunRound = { ...round, feedback: responded.map((f) => ({ ...f })) }; // snapshot, so every lead sees first positions
-        await eachLead(
-          project.leads.filter((l) => responded.some((f) => f.leadId === l.id)),
-          "Rebuttal",
-          async (lead) => {
-            const own = round.feedback.find((f) => f.leadId === lead.id)!;
-            const data = await leadCall(lead, rebuttalPrompt(positions, own, project.leads), RebuttalOutputSchema);
-            own.rebuttal = { ...data, revised: data.revised.filter((x) => known.has(x.featureId)) };
-            const n = own.rebuttal.revised.length;
-            log(leadLabel(lead), "status", n ? `Revised or pushed back on ${n} feature${n > 1 ? "s" : ""}` : "Held their position");
-          },
-        );
+        const positions: RunRound = { ...round, feedback: responded.map((f) => ({ ...f, rebuttal: undefined })) };
+        await eachLead(toReact, "Rebuttal", async (lead) => {
+          const own = round.feedback.find((f) => f.leadId === lead.id)!;
+          const data = await leadCall(lead, rebuttalPrompt(positions, positions.feedback.find((f) => f.leadId === lead.id)!, project.leads), RebuttalOutputSchema);
+          own.rebuttal = {
+            ...data,
+            revised: data.revised.filter((x) => known.has(x.featureId)),
+            reallocation: data.reallocation.filter((x) => known.has(x.featureId)),
+          };
+          const n = own.rebuttal.revised.length;
+          log(leadLabel(lead), "status", n ? `Revised or pushed back on ${n} feature${n > 1 ? "s" : ""}` : "Held their position");
+        });
       }
 
-      // 2c. Revision
-      if (r < s.rounds) {
+      // 2c. Revision (done once the next round exists)
+      if (r < s.rounds && !run.rounds[r]) {
         phase(`Developer agent is revising the features after round ${r}`);
         const rev = await developer(revisionPrompt(project, round), RevisionOutputSchema);
-        features = rev.features;
-        noteToLeads = rev.noteToLeads;
-        changelog = rev.changelog;
-        log("developer", "status", `Revised the list to ${features.length} features`);
+        run.rounds.push({ round: r + 1, features: rev.features, noteToLeads: rev.noteToLeads, changelog: rev.changelog, feedback: [] });
+        log("developer", "status", `Revised the list to ${rev.features.length} features`);
       }
     }
 
     // 3. Ranking
-    const last = run.rounds[run.rounds.length - 1];
-    phase("Analysing the feedback text");
-    const interviews = last.feedback
-      .filter((f) => !f.error)
-      .map((f) => ({
-        id: f.leadId,
-        text: [f.overall, f.quote, ...f.items.map((i) => i.comment), ...f.missing, f.rebuttal?.closing ?? "", ...(f.rebuttal?.revised.map((x) => x.comment) ?? [])].join(". "),
-      }));
-    const textAnalysis = await runToolkit({ features: [], capacity: s.teamCapacity, interviews });
-    if (!textAnalysis.result) log("system", "status", `Feedback text analysis skipped: ${textAnalysis.reason}`);
-    const insights = textInsights(textAnalysis.result);
+    if (!run.ranking) {
+      const last = run.rounds[run.rounds.length - 1];
+      phase("Analysing the feedback text");
+      const interviews = last.feedback
+        .filter((f) => !f.error)
+        .map((f) => ({
+          id: f.leadId,
+          text: [f.overall, f.quote, ...f.items.map((i) => i.comment), ...f.missing, f.rebuttal?.closing ?? "", ...(f.rebuttal?.revised.map((x) => x.comment) ?? [])].join(". "),
+        }));
+      const textAnalysis = await runToolkit({ features: [], capacity: s.teamCapacity, interviews });
+      if (!textAnalysis.result) log("system", "status", `Feedback text analysis skipped: ${textAnalysis.reason}`);
+      const insights = textInsights(textAnalysis.result);
 
-    phase("Developer agent is ranking the features");
-    const ranking = await developer(rankingPrompt(project, run.rounds, insights, s.teamCapacity), RankingOutputSchema);
-    const scored = await scoreRanking(ranking.ranked, last, s.teamCapacity);
-    if (scored.note) log("system", "status", scored.note);
-    run.ranking = scored.ranking;
-    const adoption = last.feedback.filter((f) => !f.error).map((f) => f.adoptionLikelihood);
-    run.insights = {
-      ...insights,
-      ...scored.portfolio,
-      meanAdoption: adoption.length ? Math.round((adoption.reduce((a, b) => a + b, 0) / adoption.length) * 10) / 10 : null,
-    };
-    run.summary = ranking.summary;
+      // 3a. Draft
+      if (!run.draftRanking) {
+        phase("Developer agent is ranking the features");
+        const draft = await developer(rankingPrompt(project, run.rounds, insights, s.teamCapacity), RankingOutputSchema);
+        run.draftRanking = draft.ranked;
+        run.summary = draft.summary;
+        await save();
+      }
+      const draftScored = await scoreRanking(run.draftRanking, last, s.teamCapacity);
+      let scored = draftScored;
+
+      // 3b. Sceptic challenge, then the developer's final answer
+      if (s.sceptic) {
+        const draftText = draftScored.ranking
+          .map((x) => `${x.rank}. ${x.featureId} ${x.title}: score ${x.rice} (reach ${x.reach}, impact ${x.impact}, confidence ${x.confidence}, effort ${x.effort}). ${x.rationale}`)
+          .join("\n");
+        if (!run.critique) {
+          phase("Sceptic agent is challenging the developer's estimates");
+          const critique = await call({
+            agent: "sceptic",
+            system: SCEPTIC_SYSTEM,
+            prompt: scepticPrompt(project, run.rounds, briefs, draftText),
+            schema: CritiqueSchema,
+            model: s.developerModel,
+          });
+          const known = new Set(last.features.map((f) => f.id));
+          run.critique = { ...critique, challenges: critique.challenges.filter((c) => known.has(c.featureId)) };
+          log("sceptic", "status", `Raised ${run.critique.challenges.length} challenges`);
+        }
+        phase("Developer agent is answering the sceptic and finalising the ranking");
+        const fin = await developer(
+          rankingPrompt(project, run.rounds, insights, s.teamCapacity, { critique: run.critique, draft: draftText }),
+          FinalRankingOutputSchema,
+        );
+        run.summary = fin.summary;
+        run.critiqueResponse = fin.responseToCritique;
+        // The final pass must still rank every feature; any it left out keep their draft inputs.
+        const answered = new Set(fin.ranked.map((x) => x.featureId));
+        const kept = run.draftRanking.filter((x) => !answered.has(x.featureId));
+        if (kept.length) log("system", "status", `${kept.length} feature${kept.length > 1 ? "s" : ""} missing from the final answer kept their draft inputs`);
+        scored = await scoreRanking([...fin.ranked, ...kept], last, s.teamCapacity);
+        const draftRank = new Map(draftScored.ranking.map((x) => [x.featureId, x.rank]));
+        scored.ranking.forEach((x) => (x.draftRank = draftRank.get(x.featureId) ?? null));
+        log("developer", "status", "Answered the sceptic and finalised the ranking");
+      }
+
+      if (scored.note) log("system", "status", scored.note);
+      const adoption = last.feedback.filter((f) => !f.error).map((f) => f.adoptionLikelihood);
+      run.insights = {
+        ...insights,
+        ...scored.portfolio,
+        meanAdoption: adoption.length ? Math.round((adoption.reduce((a, b) => a + b, 0) / adoption.length) * 10) / 10 : null,
+      };
+      run.ranking = scored.ranking;
+    }
     run.status = "completed";
     phase("Completed");
   } catch (e) {
@@ -288,7 +398,7 @@ function textInsights(result: ToolkitResult | null): Pick<RunInsights, "themes" 
 
 /** Scores the developer agent's RICE inputs with rice_prioritizer.py, or the built-in equivalent without Python. */
 async function scoreRanking(ranked: RankingOutput["ranked"], last: RunRound, capacity: number) {
-  const rows = ranked.filter((r) => last.features.some((f) => f.id === r.featureId));
+  const rows = ranked.filter((r, i) => last.features.some((f) => f.id === r.featureId) && ranked.findIndex((x) => x.featureId === r.featureId) === i);
   const inputs: ToolkitFeature[] = rows.map((r) => ({
     id: r.featureId,
     name: last.features.find((f) => f.id === r.featureId)!.title,
@@ -326,6 +436,7 @@ async function scoreRanking(ranked: RankingOutput["ranked"], last: RunRound, cap
   }
 
   const responded = last.feedback.filter((f) => !f.error);
+  const budgets = responded.map(finalPoints).filter((m) => m.size > 0);
   const ranking: RankedFeature[] = order.map((id, i) => {
     const row = rows.find((r) => r.featureId === id)!;
     const scores = responded.map((f) => finalScores(f).get(id)).filter((x): x is number => x !== undefined);
@@ -336,7 +447,9 @@ async function scoreRanking(ranked: RankingOutput["ranked"], last: RunRound, cap
       rice: rice.get(id) ?? 0,
       avgLeadScore: scores.length ? Math.round((scores.reduce((a, b) => a + b, 0) / scores.length) * 10) / 10 : null,
       firstChoiceShare: responded.length ? responded.filter((f) => f.topPick === id).length / responded.length : 0,
+      pointsShare: budgets.length ? budgets.reduce((a, m) => a + (m.get(id) ?? 0), 0) / (budgets.length * POINT_BUDGET) : null,
       quarter: quarter.get(id) ?? null,
+      draftRank: null,
     };
   });
   return { ranking, portfolio, note: result?.rice ? undefined : `Scored with the built-in RICE formula: ${reason}` };

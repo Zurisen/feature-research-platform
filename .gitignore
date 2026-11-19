@@ -47,3 +47,7 @@ next-env.d.ts
 # python bytecode
 __pycache__/
 *.pyc
+
+# locally installed agent skills (third-party, see DESIGN.md)
+/.claude/skills/
+/.playwright-cli/

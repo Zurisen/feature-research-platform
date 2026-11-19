@@ -1,4 +1,4 @@
-import { Feature, finalScores, Lead, LeadFeedback, PersonaBrief, Project, RunInsights, RunRound } from "./types";
+import { Critique, Feature, finalPoints, finalScores, Lead, LeadFeedback, PersonaBrief, POINT_BUDGET, Project, RunInsights, RunRound } from "./types";
 
 const line = (label: string, v: string) => (v.trim() ? `${label}: ${v.trim()}\n` : "");
 
@@ -59,11 +59,13 @@ export function featureList(features: Feature[]) {
 function feedbackEntry(f: LeadFeedback, leads: Lead[]) {
   const lead = leads.find((l) => l.id === f.leadId);
   const scores = finalScores(f);
+  const points = finalPoints(f);
   const items = f.items
     .map((i) => {
       const final = scores.get(i.featureId) ?? i.score;
       const changed = final !== i.score ? ` (first said ${i.score}/5)` : "";
-      return `  - ${i.featureId}: ${final}/5${changed}, ${i.wouldUse ? "would use" : "would not use"}. ${i.comment}`;
+      const spent = points.size ? `, ${Math.round((points.get(i.featureId) ?? 0) * 10) / 10} of ${POINT_BUDGET} budget points` : "";
+      return `  - ${i.featureId}: ${final}/5${changed}${spent}, ${i.wouldUse ? "would use" : "would not use"}. ${i.comment}`;
     })
     .join("\n");
   const rebuttal = f.rebuttal
@@ -152,7 +154,13 @@ Use the synthesize-research skill to pull the themes out of this feedback, then 
 Also write a short note to the leads saying what you changed because of their feedback and what you most want their view on in the next round.`;
 }
 
-export function rankingPrompt(p: Project, rounds: RunRound[], insights: Pick<RunInsights, "themes" | "painPoints" | "requests">, teamCapacity: number) {
+export function rankingPrompt(
+  p: Project,
+  rounds: RunRound[],
+  insights: Pick<RunInsights, "themes" | "painPoints" | "requests">,
+  teamCapacity: number,
+  challenge?: { critique: Critique; draft: string },
+) {
   const last = rounds[rounds.length - 1];
   const history = rounds
     .slice(0, -1)
@@ -160,7 +168,9 @@ export function rankingPrompt(p: Project, rounds: RunRound[], insights: Pick<Run
     .join("\n\n");
   const picks = new Map<string, number>();
   for (const f of last.feedback) if (!f.error) picks.set(f.topPick, (picks.get(f.topPick) ?? 0) + 1);
+  const budget = budgetTotals(last);
   const analysis = [
+    budget.length ? `Budget points spent by all leads together: ${budget.map(([id, n]) => `${id} ${n}`).join(", ")}` : "",
     picks.size ? `First-choice votes: ${[...picks].map(([id, n]) => `${id} x${n}`).join(", ")}` : "",
     insights.themes.length ? `Recurring themes in the feedback text: ${insights.themes.map((t) => `${t.name} (${t.count})`).join(", ")}` : "",
     insights.painPoints.length ? `Pain points quoted: ${insights.painPoints.slice(0, 8).join(" | ")}` : "",
@@ -187,7 +197,71 @@ Produce the prioritisation, using the roadmap-update skill's prioritisation guid
 
 A script computes the score from your inputs as reach x impact x confidence / effort and lays the features out quarter by quarter against a team capacity of ${teamCapacity} person-months per quarter, so make the inputs reflect your actual judgement. Explain each feature briefly, name the leads who most wanted it, and state the main concern raised.
 
-Finish with a short recommendation of what to build next and why, including anything you would validate with real customers first.`;
+Finish with a short recommendation of what to build next and why, including anything you would validate with real customers first.${
+    challenge
+      ? `
+
+This is your second pass. Your first ranking was:
+
+${challenge.draft}
+
+A sceptic reviewed it and raised these challenges:
+
+${critiqueText(challenge.critique)}
+
+Go through the challenges. Where the sceptic is right, change the inputs, usually by lowering confidence or reach, or by re-scoping the feature in your rationale. Where the sceptic is wrong, keep your input and say why. Then report which points you accepted and which you rejected.
+
+Return inputs for every feature in the final list, under its existing id, including the ones you did not change. Do not drop, merge or renumber features at this stage; if a feature should be cut or re-scoped, say so in its rationale and lower its inputs.`
+      : ""
+  }`;
+}
+
+function budgetTotals(round: RunRound): [string, number][] {
+  const totals = new Map<string, number>();
+  for (const f of round.feedback) {
+    if (f.error) continue;
+    for (const [id, pts] of finalPoints(f)) totals.set(id, (totals.get(id) ?? 0) + pts);
+  }
+  return [...totals].map(([id, n]) => [id, Math.round(n * 10) / 10] as [string, number]).sort((a, b) => b[1] - a[1]);
+}
+
+function critiqueText(c: Critique) {
+  return (
+    c.challenges.map((x) => `- [${x.severity}] ${x.featureId}, ${x.kind}: ${x.issue} Suggestion: ${x.suggestion}`).join("\n") +
+    (c.weakLeads.length ? `\nLeads to weigh less: ${c.weakLeads.map((w) => `${w.lead} (${w.reason})`).join("; ")}` : "") +
+    `\nOverall: ${c.overall}`
+  );
+}
+
+// ---------- Sceptic agent (no tools, no skills) ----------
+
+export const SCEPTIC_SYSTEM = `You are a sceptical reviewer of a product prioritisation. A developer agent has ranked a list of features using feedback from sales leads, and your job is to find where that ranking is weaker than it looks before anyone acts on it.
+
+The leads are simulated from CRM profiles, some from a single line of text and some marked hypothetical, so their feedback is evidence of varying strength. The developer agent's reach, impact, confidence and effort figures are its own estimates. Look for: features whose position rests on one enthusiastic lead; support that comes mainly from leads with thin or hypothetical profiles; reach or effort numbers that nothing in the material supports; high confidence where the leads disagreed; objections that were raised and then dropped; and features that scored well only because nobody would object to them.
+
+Be specific and fair. Name the feature, say what the evidence actually is, and say what should change. A challenge that could be made of any feature is not useful. If part of the ranking is well supported, say so in the overall assessment; do not invent problems to fill space.`;
+
+export function scepticPrompt(p: Project, rounds: RunRound[], briefs: Record<string, PersonaBrief>, draft: string) {
+  const last = rounds[rounds.length - 1];
+  const budget = budgetTotals(last);
+  return `${businessBrief(p)}
+The leads, with what is known about each. The profile text is all the lead agents were given, apart from the background research where shown:
+
+${leadsBlock(p, briefs)}
+
+Final feature list:
+
+${featureList(last.features)}
+
+Final round feedback (scores are where each lead ended after hearing the others):
+
+${feedbackDigest(last.feedback, p.leads)}
+${budget.length ? `\nBudget points spent by all leads together: ${budget.map(([id, n]) => `${id} ${n}`).join(", ")}\n` : ""}
+The developer agent's draft ranking, with its RICE inputs and the computed score:
+
+${draft}
+
+Challenge this ranking.`;
 }
 
 // ---------- Lead agents (no tools, no skills: an isolated, in-character reaction) ----------
@@ -213,6 +287,8 @@ ${featureList(round.features)}
 
 Give your reaction to every feature, using its id: a score from 1 (no value to me) to 5 (I need this), whether you would actually use it, and a short comment. List anything you would want that is missing, and give your overall take.
 
+You also have a budget of ${POINT_BUDGET} points to spend across the features, as if it were your own money deciding what gets built. Spend all ${POINT_BUDGET}, in whole points, and give 0 to anything you would not pay for. The scores say how much you like each feature on its own; the budget forces the trade-off, so concentrate points on what matters most to you instead of spreading them evenly.
+
 Then answer three things a concept test would ask: which single feature you would pick if only one could be built, how likely you would be to buy or expand if that one shipped, and one sentence in your own voice that sums up your reaction.`;
 }
 
@@ -230,5 +306,5 @@ For reference, the features:
 
 ${featureList(round.features)}
 
-Having heard them, has anything changed for you? Other customers sometimes raise a use or a risk you had not considered, and sometimes they want things that would make the product worse for you. List only the features where you now score differently, or where you disagree with another lead strongly enough to say so, with your score and reason. If your view stands, return no revisions. End with a short closing statement. Hold your own position where it reflects your real needs; agreeing for the sake of agreement helps nobody.`;
+Having heard them, has anything changed for you? Other customers sometimes raise a use or a risk you had not considered, and sometimes they want things that would make the product worse for you. List only the features where you now score differently, or where you disagree with another lead strongly enough to say so, with your score and reason. If your view stands, return no revisions. If you would now spend your ${POINT_BUDGET}-point budget differently, give your full new allocation across the features (still adding up to ${POINT_BUDGET}); otherwise leave the reallocation empty. End with a short closing statement. Hold your own position where it reflects your real needs; agreeing for the sake of agreement helps nobody.`;
 }

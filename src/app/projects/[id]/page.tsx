@@ -45,7 +45,7 @@ export default function ProjectPage() {
   if (!data) return <p className="hint">Loading…</p>;
   const { project: p, runs } = data;
   const agentCalls = settings
-    ? 2 + (settings.rounds - 1) + settings.rounds * p.leads.length * (settings.debate ? 2 : 1) + (settings.personaBriefs ? p.leads.length : 0)
+    ? 2 + (settings.rounds - 1) + (settings.sceptic ? 2 : 0) + settings.rounds * p.leads.length * (settings.debate ? 2 : 1) + (settings.personaBriefs ? p.leads.length : 0)
     : 0;
 
   return (
@@ -102,9 +102,19 @@ export default function ProjectPage() {
                 <input type="checkbox" checked={settings.debate} onChange={(e) => setSettings({ ...settings, debate: e.target.checked })} />
                 Leads react to each other
               </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={settings.sceptic} onChange={(e) => setSettings({ ...settings, sceptic: e.target.checked })} />
+                Sceptic challenges the ranking
+              </label>
+              {settings.personaBriefs && (
+                <label className="flex items-center gap-2">
+                  <input type="checkbox" checked={settings.reuseBriefs} onChange={(e) => setSettings({ ...settings, reuseBriefs: e.target.checked })} />
+                  Reuse saved persona briefs
+                </label>
+              )}
             </div>
             <p className="hint">
-              This run makes about {agentCalls} agent calls across {p.leads.length} leads and {settings.rounds} round
+              This run makes up to {agentCalls} agent calls{settings.personaBriefs && settings.reuseBriefs ? " (fewer when saved persona briefs are reused)" : ""} across {p.leads.length} leads and {settings.rounds} round
               {settings.rounds > 1 ? "s" : ""}, using {settings.authMode === "local" ? "the Claude Code login on this machine" : "your Anthropic API key"}.
             </p>
           </>

@@ -9,20 +9,25 @@ export type SceneAgent = {
   id: string; // "developer" or a lead id
   name: string;
   subtitle: string;
-  role: "developer" | "lead";
+  role: "developer" | "lead" | "sceptic";
   state: AgentState;
   text: string;
   color: string;
 };
 
 export const DEVELOPER_ID = "developer";
-export const DEVELOPER_COLOR = "#5b7cfa";
-// Distinct hues that hold up on both light and dark surfaces.
-const LEAD_COLORS = ["#f08c00", "#12b886", "#e64980", "#7950f2", "#15aabf", "#82c91e", "#fa5252", "#fab005", "#4c6ef5", "#be4bdb"];
+export const SCEPTIC_ID = "sceptic";
+// Lead colours are the data-viz categorical palette in its validated order (identity, never rank),
+// stepped separately for light and dark surfaces. Leads beyond the eighth share a neutral gray.
+const PALETTE = {
+  light: { developer: "#1a1a18", sceptic: "#8a8880", overflow: "#a09e96", leads: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"] },
+  dark: { developer: "#edece7", sceptic: "#8a8880", overflow: "#6f6e68", leads: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9", "#e66767"] },
+};
 
-type Step = "briefs" | "research" | "positions" | "rebuttal" | "revise" | "rank" | "other";
+type Step = "briefs" | "research" | "positions" | "rebuttal" | "revise" | "rank" | "sceptic" | "other";
 
 function step(phase: string): Step {
+  if (phase.startsWith("Sceptic agent")) return "sceptic";
   if (phase.includes("persona briefs")) return "briefs";
   if (phase.includes("is researching")) return "research";
   if (phase.includes("reviewing the features")) return "positions";
@@ -41,7 +46,10 @@ function lastEvent(events: RunEvent[], names: string[], kinds?: RunEvent["kind"]
   return undefined;
 }
 
-export function deriveAgents(run: Run, project: Project | null): SceneAgent[] {
+export function deriveAgents(run: Run, project: Project | null, dark = false): SceneAgent[] {
+  const colors = dark ? PALETTE.dark : PALETTE.light;
+  const DEVELOPER_COLOR = colors.developer;
+  const SCEPTIC_COLOR = colors.sceptic;
   const running = run.status === "running";
   const now = step(run.phase);
   const round = run.rounds[run.rounds.length - 1];
@@ -93,10 +101,23 @@ export function deriveAgents(run: Run, project: Project | null): SceneAgent[] {
       state = "error";
       text = last.text;
     }
-    return { id: l.id, name: label, subtitle: [l.title !== label ? l.title : "", l.company].filter(Boolean).join(" · "), role: "lead", state, text, color: LEAD_COLORS[i % LEAD_COLORS.length] };
+    return { id: l.id, name: label, subtitle: [l.title !== label ? l.title : "", l.company].filter(Boolean).join(" · "), role: "lead", state, text, color: colors.leads[i] ?? colors.overflow };
   });
 
-  return [developer, ...leads];
+  const others: SceneAgent[] = [];
+  if (run.settings.sceptic ?? false) {
+    const challenging = running && now === "sceptic";
+    others.push({
+      id: SCEPTIC_ID,
+      name: "Sceptic agent",
+      subtitle: "Challenges the ranking",
+      role: "sceptic",
+      color: SCEPTIC_COLOR,
+      state: challenging ? "working" : run.critique ? "done" : running ? "idle" : finished,
+      text: challenging ? "Looking for weak evidence" : (lastEvent(run.events, [SCEPTIC_ID], ["status"])?.text ?? (running ? "Waiting for the draft ranking" : "")),
+    });
+  }
+  return [developer, ...others, ...leads];
 }
 
 export type PulseSpec = { from: string; to: string; color: string };
@@ -106,8 +127,11 @@ export function pulsesFor(event: RunEvent, agents: SceneAgent[]): PulseSpec[] {
   if (event.kind !== "status") return [];
   const leads = agents.filter((a) => a.role === "lead");
   const lead = leads.find((a) => a.name === event.agent);
+  const colorOf = (id: string) => agents.find((a) => a.id === id)?.color ?? "#888";
+  if (event.agent === SCEPTIC_ID) return [{ from: SCEPTIC_ID, to: DEVELOPER_ID, color: colorOf(SCEPTIC_ID) }];
+  if (event.agent === DEVELOPER_ID && /^Answered the sceptic/.test(event.text)) return [{ from: DEVELOPER_ID, to: SCEPTIC_ID, color: colorOf(DEVELOPER_ID) }];
   if (event.agent === DEVELOPER_ID && /^(Proposed|Revised)/.test(event.text)) {
-    return leads.map((l) => ({ from: DEVELOPER_ID, to: l.id, color: DEVELOPER_COLOR }));
+    return leads.map((l) => ({ from: DEVELOPER_ID, to: l.id, color: colorOf(DEVELOPER_ID) }));
   }
   if (!lead) return [];
   if (/^(Gave feedback|Persona brief ready)/.test(event.text)) return [{ from: lead.id, to: DEVELOPER_ID, color: lead.color }];

@@ -72,6 +72,10 @@ export const SettingsSchema = z.object({
   personaBriefs: z.boolean().default(true),
   // After giving their own view, leads see each other's positions and may revise.
   debate: z.boolean().default(true),
+  // A sceptic agent challenges the draft ranking, and the developer agent answers before it is final.
+  sceptic: z.boolean().default(true),
+  // Reuse persona briefs saved from earlier runs of the same project when the lead has not changed.
+  reuseBriefs: z.boolean().default(true),
   // Person-months the team can spend per quarter; used to lay the ranking out as a roadmap.
   teamCapacity: z.number().int().min(1).max(200).default(10),
 });
@@ -114,6 +118,12 @@ export const LeadFeedbackOutputSchema = z.object({
       score: z.number().int().min(1).max(5).describe("1 = no value to me, 5 = I need this"),
       wouldUse: z.boolean(),
       comment: z.string().describe("First-person reaction, 1-3 sentences."),
+      points: z
+        .number()
+        .int()
+        .min(0)
+        .max(10)
+        .describe("Points from my 10-point budget spent on this feature. Across all features they add up to exactly 10; 0 for features I would not spend on."),
     }),
   ),
   missing: z.array(z.string()).describe("Things I would want that are not on the list."),
@@ -139,6 +149,9 @@ export const RebuttalOutputSchema = z.object({
       }),
     )
     .describe("Only the features where I changed my mind or want to push back. Empty if my view stands."),
+  reallocation: z
+    .array(z.object({ featureId: z.string(), points: z.number().int().min(0).max(10) }))
+    .describe("My full 10-point allocation, only if hearing the others changed how I would spend it. Empty if it stands."),
   closing: z.string().describe("First-person closing statement after hearing the others, 1-3 sentences."),
 });
 export type RebuttalOutput = z.infer<typeof RebuttalOutputSchema>;
@@ -161,6 +174,36 @@ export const RevisionOutputSchema = z.object({
 });
 export type RevisionOutput = z.infer<typeof RevisionOutputSchema>;
 
+export const POINT_BUDGET = 10;
+
+/** A lead's 10-point budget per feature for a round, after any reallocation, scaled so it sums to the budget. */
+export function finalPoints(fb: LeadFeedback): Map<string, number> {
+  const known = new Set(fb.items.map((i) => i.featureId));
+  const re = (fb.rebuttal?.reallocation ?? []).filter((x) => known.has(x.featureId));
+  const raw: [string, number][] = re.length
+    ? re.map((x) => [x.featureId, x.points])
+    : fb.items.filter((i) => typeof i.points === "number").map((i) => [i.featureId, i.points]);
+  const total = raw.reduce((a, [, p]) => a + p, 0);
+  return new Map(total > 0 ? raw.map(([id, p]) => [id, (p / total) * POINT_BUDGET]) : []);
+}
+
+export const CritiqueSchema = z.object({
+  challenges: z.array(
+    z.object({
+      featureId: z.string(),
+      kind: z.enum(["rests on one lead", "thin lead data", "guessed estimate", "leads disagree", "ignored objection", "other"]),
+      severity: z.enum(["high", "medium", "low"]),
+      issue: z.string().describe("What is weak about this feature's position in the ranking, 1-3 sentences."),
+      suggestion: z.string().describe("What should change: which input to move and in which direction, or what to validate first."),
+    }),
+  ),
+  weakLeads: z
+    .array(z.object({ lead: z.string(), reason: z.string() }))
+    .describe("Leads whose feedback deserves less weight, for example hypothetical leads or ones simulated from one line of profile."),
+  overall: z.string().describe("Markdown: how far the ranking as a whole can be trusted and what would change it most."),
+});
+export type Critique = z.infer<typeof CritiqueSchema>;
+
 // RICE inputs use the categories that vendor/claude-skills rice_prioritizer.py expects.
 export const RankingOutputSchema = z.object({
   ranked: z.array(
@@ -179,12 +222,20 @@ export const RankingOutputSchema = z.object({
 });
 export type RankingOutput = z.infer<typeof RankingOutputSchema>;
 
+export const FinalRankingOutputSchema = RankingOutputSchema.extend({
+  responseToCritique: z
+    .string()
+    .describe("Markdown: which of the sceptic's points you accepted and what you changed, and which you rejected and why."),
+});
+
 export type RankedFeature = RankingOutput["ranked"][number] & {
   rank: number;
   title: string;
   rice: number;
   avgLeadScore: number | null;
   firstChoiceShare: number; // 0-1, share of leads who picked it as their single top feature
+  pointsShare: number | null; // 0-1, share of all leads' 10-point budgets spent on it
+  draftRank: number | null; // rank before the sceptic's challenge
   quarter: number | null; // quarter it lands in given team capacity
 };
 
@@ -229,6 +280,9 @@ export type Run = {
   briefs?: Record<string, PersonaBrief>; // by lead id
   rounds: RunRound[];
   insights?: RunInsights;
+  draftRanking?: RankingOutput["ranked"]; // the developer agent's inputs before the sceptic's challenge
+  critique?: Critique;
+  critiqueResponse?: string;
   ranking?: RankedFeature[];
   summary?: string;
   costUsd: number;

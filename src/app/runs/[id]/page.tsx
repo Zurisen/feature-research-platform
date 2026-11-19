@@ -4,14 +4,15 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import RankingChart from "@/components/RankingChart";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api } from "@/lib/client";
-import { finalScores, type Project, type Run, type RunRound } from "@/lib/types";
+import { finalPoints, finalScores, type Project, type Run, type RunRound } from "@/lib/types";
 
 // three.js needs the browser, so the scene is loaded on the client only.
 const AgentScene = dynamic(() => import("@/components/AgentScene"), {
   ssr: false,
-  loading: () => <div className="hint flex h-[440px] items-center justify-center">Loading the agent view…</div>,
+  loading: () => <div className="skeleton h-[440px]" aria-label="Loading the agent view…" />,
 });
 
 export default function RunPage() {
@@ -19,6 +20,19 @@ export default function RunPage() {
   const [data, setData] = useState<{ run: Run; project: Project | null } | null>(null);
   const [error, setError] = useState("");
   const [roundIdx, setRoundIdx] = useState<number | null>(null);
+  const [tick, setTick] = useState(0); // bump to restart polling after resuming a run
+  const [actionError, setActionError] = useState("");
+
+  async function resume(addRound: boolean) {
+    setActionError("");
+    try {
+      await api(`/api/runs/${id}/resume`, { json: { addRound } });
+      setRoundIdx(null);
+      setTick((t) => t + 1);
+    } catch (e) {
+      setActionError((e as Error).message);
+    }
+  }
 
   useEffect(() => {
     let stop = false;
@@ -41,9 +55,18 @@ export default function RunPage() {
       stop = true;
       clearTimeout(timer);
     };
-  }, [id]);
+  }, [id, tick]);
 
-  if (!data) return <p className={error ? "text-sm text-bad" : "hint"}>{error || "Loading…"}</p>;
+  if (!data) {
+    return error ? (
+      <p className="text-sm text-bad" role="alert">{error}</p>
+    ) : (
+      <div className="space-y-6" aria-busy="true" aria-label="Loading the run…">
+        <div className="skeleton h-16 max-w-md" />
+        <div className="skeleton h-[440px]" />
+      </div>
+    );
+  }
   const { run, project } = data;
   const leads = project?.leads ?? [];
   const leadName = (leadId: string) => {
@@ -59,20 +82,48 @@ export default function RunPage() {
           {project && (
             <Link href={`/projects/${project.id}`} className="hint hover:text-text">← {project.name}</Link>
           )}
-          <h1 className="mt-1 flex items-center gap-3 text-2xl font-semibold">
+          <h1 className="mt-1 flex flex-wrap items-center gap-3 text-2xl font-semibold sm:text-3xl">
             Run <StatusBadge status={run.status} />
           </h1>
-          <p className="hint mt-1" aria-live="polite">
-            {run.phase}
-            {run.costUsd > 0 && ` · estimated cost $${run.costUsd.toFixed(2)}`}
-          </p>
+          <p className="mt-1 text-sm text-muted" aria-live="polite">{run.phase}</p>
+          <dl className="mt-4 flex flex-wrap gap-x-8 gap-y-3 text-sm">
+            <div>
+              <dt className="hint">Rounds</dt>
+              <dd className="num text-lg font-medium">{run.rounds.length}<span className="text-muted">/{run.settings.rounds}</span></dd>
+            </div>
+            <div>
+              <dt className="hint">Leads</dt>
+              <dd className="num text-lg font-medium">{leads.length}</dd>
+            </div>
+            <div>
+              <dt className="hint">Estimated cost</dt>
+              <dd className="num text-lg font-medium">${run.costUsd.toFixed(2)}</dd>
+            </div>
+            <div>
+              <dt className="hint">Started</dt>
+              <dd className="text-lg font-medium">{new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(new Date(run.createdAt))}</dd>
+            </div>
+          </dl>
         </div>
-        {run.status === "running" && (
-          <button className="btn btn-danger" onClick={() => api(`/api/runs/${id}/cancel`, { method: "POST" })}>
-            Cancel run
-          </button>
-        )}
+        <div className="flex flex-wrap gap-2">
+          {run.status === "running" && (
+            <button className="btn btn-danger" onClick={() => api(`/api/runs/${id}/cancel`, { method: "POST" })}>
+              Cancel run
+            </button>
+          )}
+          {(run.status === "failed" || run.status === "cancelled") && (
+            <button className="btn btn-primary" onClick={() => resume(false)} title="Continues from the last completed step; finished steps are not repeated">
+              Resume run
+            </button>
+          )}
+          {run.status === "completed" && run.settings.rounds < 5 && (
+            <button className="btn" onClick={() => resume(true)} title="The developer agent revises the list, the leads review it again, and the ranking is redone">
+              Add another round
+            </button>
+          )}
+        </div>
       </div>
+      {actionError && <p className="text-sm text-bad" role="alert">{actionError}</p>}
 
       {run.error && <div className="card border-bad text-sm text-bad" role="alert">{run.error}</div>}
 
@@ -91,15 +142,17 @@ export default function RunPage() {
 
       {run.ranking && (
         <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Feature ranking</h2>
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[640px] text-left text-sm">
+          <h2 className="text-lg font-semibold">Feature Ranking</h2>
+          <RankingChart ranking={run.ranking} />
+          <div className="overflow-x-auto border-t border-border pt-2">
+            <table className="w-full min-w-[720px] text-left text-sm [&_td]:align-top [&_td:nth-child(n+3)]:font-mono [&_td:nth-child(n+3)]:tabular-nums">
               <thead className="text-muted">
                 <tr className="border-b border-border">
                   <th className="py-2 pr-3 font-medium">#</th>
                   <th className="py-2 pr-3 font-medium">Feature</th>
                   <th className="py-2 pr-3 font-medium" title="Reach × Impact × Confidence ÷ Effort">RICE</th>
                   <th className="py-2 pr-3 font-medium" title="Average score from the final round">Leads</th>
+                  <th className="py-2 pr-3 font-medium" title="Share of all the leads' 10-point budgets spent on it">Budget</th>
                   <th className="py-2 pr-3 font-medium" title="Share of leads who chose it as their single top feature">1st choice</th>
                   <th className="py-2 pr-3 font-medium">Reach</th>
                   <th className="py-2 pr-3 font-medium">Impact</th>
@@ -111,7 +164,14 @@ export default function RunPage() {
               <tbody>
                 {run.ranking.map((r) => (
                   <tr key={r.featureId} className="border-b border-border align-top last:border-0">
-                    <td className="py-3 pr-3 font-semibold">{r.rank}</td>
+                    <td className="py-3 pr-3 font-semibold whitespace-nowrap">
+                      {r.rank}
+                      {r.draftRank != null && r.draftRank !== r.rank && (
+                        <span className={`ml-1 text-xs font-normal ${r.draftRank > r.rank ? "text-good" : "text-bad"}`} title={`Was #${r.draftRank} before the sceptic's challenge`}>
+                          {r.draftRank > r.rank ? "▲" : "▼"}{Math.abs(r.draftRank - r.rank)}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-3 pr-3">
                       <p className="font-medium">
                         {r.title}
@@ -121,9 +181,17 @@ export default function RunPage() {
                       <p className="mt-1 text-muted">{r.rationale}</p>
                       {r.champions.length > 0 && <p className="mt-1"><span className="text-good">Wanted by:</span> {r.champions.join(", ")}</p>}
                       {r.concerns && <p className="mt-1"><span className="text-warn">Concern:</span> {r.concerns}</p>}
+                      {run.critique?.challenges
+                        .filter((c) => c.featureId === r.featureId)
+                        .map((c, i) => (
+                          <p key={i} className="mt-1">
+                            <span className={c.severity === "high" ? "text-bad" : "text-warn"}>Sceptic ({c.kind}):</span> {c.issue}
+                          </p>
+                        ))}
                     </td>
                     <td className="py-3 pr-3 font-semibold">{r.rice}</td>
                     <td className="py-3 pr-3 whitespace-nowrap">{r.avgLeadScore !== null ? `${r.avgLeadScore}/5` : "—"}</td>
+                    <td className="py-3 pr-3">{r.pointsShare != null ? `${Math.round(r.pointsShare * 100)}%` : "—"}</td>
                     <td className="py-3 pr-3">{r.firstChoiceShare !== undefined ? `${Math.round(r.firstChoiceShare * 100)}%` : "—"}</td>
                     <td className="py-3 pr-3">{r.reach}</td>
                     <td className="py-3 pr-3">{r.impact}</td>
@@ -147,6 +215,44 @@ export default function RunPage() {
               <h3 className="mb-1 font-semibold">Recommendation</h3>
               <p className="prose-block">{run.summary}</p>
             </div>
+          )}
+          {run.critique && (
+            <details className="rounded-lg border border-border p-4">
+              <summary className="cursor-pointer font-semibold">
+                Sceptic&apos;s challenge ({run.critique.challenges.length} points) and the developer agent&apos;s answer
+              </summary>
+              <div className="mt-3 space-y-4 text-sm">
+                <div>
+                  <h4 className="mb-1 font-medium">How far to trust this ranking</h4>
+                  <p className="prose-block">{run.critique.overall}</p>
+                </div>
+                {run.critique.weakLeads.length > 0 && (
+                  <div>
+                    <h4 className="mb-1 font-medium">Leads to weigh less</h4>
+                    <ul className="list-disc space-y-1 pl-5">
+                      {run.critique.weakLeads.map((w) => <li key={w.lead}><span className="font-medium">{w.lead}:</span> {w.reason}</li>)}
+                    </ul>
+                  </div>
+                )}
+                <div>
+                  <h4 className="mb-1 font-medium">Challenges</h4>
+                  <ul className="space-y-2">
+                    {run.critique.challenges.map((c, i) => (
+                      <li key={i}>
+                        <span className={`badge mr-2 ${c.severity === "high" ? "text-bad" : c.severity === "medium" ? "text-warn" : ""}`}>{c.severity}</span>
+                        <span className="font-medium">{c.featureId} · {c.kind}.</span> {c.issue} <span className="text-muted">Suggested: {c.suggestion}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+                {run.critiqueResponse && (
+                  <div>
+                    <h4 className="mb-1 font-medium">Developer agent&apos;s answer</h4>
+                    <p className="prose-block">{run.critiqueResponse}</p>
+                  </div>
+                )}
+              </div>
+            </details>
           )}
         </section>
       )}
@@ -233,10 +339,12 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
               first: i.score,
               score: finalScores(fb).get(f.id) ?? i.score,
               rebuttal: fb.rebuttal?.revised.find((x) => x.featureId === f.id)?.comment,
+              points: finalPoints(fb).get(f.id),
               topPick: fb.topPick === f.id,
             })),
         );
         const avg = reactions.length ? reactions.reduce((a, b) => a + b.score, 0) / reactions.length : null;
+        const budget = reactions.some((r) => r.points !== undefined) ? reactions.reduce((a, b) => a + (b.points ?? 0), 0) : null;
         return (
           <div key={f.id} className="rounded-lg border border-border p-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
@@ -244,6 +352,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
               <span className="flex gap-2">
                 <span className="badge">Effort {f.effort}</span>
                 {avg !== null && <span className="badge">{avg.toFixed(1)}/5 from {reactions.length}</span>}
+                {budget !== null && <span className="badge" title="Budget points the leads spent on this feature, out of 10 each">{Math.round(budget * 10) / 10} pts</span>}
               </span>
             </div>
             <p className="mt-2 text-sm">{f.description}</p>
@@ -258,6 +367,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
                     <span>
                       <span className="font-medium">{leadName(r.leadId)}:</span> {r.comment}
                       {r.topPick && <span className="badge ml-2">Top pick</span>}
+                      {r.points !== undefined && r.points > 0 && <span className="badge ml-2">{Math.round(r.points * 10) / 10} pts</span>}
                       {r.rebuttal && <span className="mt-1 block text-muted">After hearing the others: {r.rebuttal}</span>}
                     </span>
                   </li>

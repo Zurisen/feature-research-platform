@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
-import { Project, ProjectInput, Run, Settings, SettingsSchema } from "./types";
+import { createHash, randomUUID } from "node:crypto";
+import { Lead, PersonaBrief, Project, ProjectInput, Run, Settings, SettingsSchema } from "./types";
 
 // Local JSON-file persistence. Good enough for a single-user local iteration;
 // swap for a database when the app becomes multi-user.
@@ -95,6 +95,48 @@ export async function listRuns(projectId?: string): Promise<Run[]> {
   return runs
     .filter((r): r is Run => !!r && (!projectId || r.projectId === projectId))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+// ---------- Persona brief cache (per project, reused across runs) ----------
+
+type BriefCache = Record<string, { hash: string; brief: PersonaBrief; savedAt: string }>;
+
+const briefFile = (projectId: string) => path.join(DATA_DIR, "briefs", `${projectId.replace(/[^a-z0-9-]/gi, "")}.json`);
+
+/** A brief stays valid while the lead's profile and the business it is judged against are unchanged. */
+export function briefHash(project: Project, lead: Lead) {
+  const { id: _id, ...profile } = lead;
+  void _id;
+  return createHash("sha1").update(JSON.stringify([profile, project.business])).digest("hex");
+}
+
+export async function getSavedBriefs(project: Project): Promise<Record<string, PersonaBrief>> {
+  let cache = await readJson<BriefCache | null>(briefFile(project.id), null);
+  if (!cache) {
+    // First use: adopt the briefs of the latest run that has them (runs made before the cache existed).
+    const source = (await listRuns(project.id)).find((r) => r.briefs && Object.keys(r.briefs).length > 0);
+    cache = {};
+    for (const lead of project.leads) {
+      const brief = source?.briefs?.[lead.id];
+      if (brief) cache[lead.id] = { hash: briefHash(project, lead), brief, savedAt: source!.createdAt };
+    }
+    if (Object.keys(cache).length) await writeJson(briefFile(project.id), cache);
+  }
+  const valid: Record<string, PersonaBrief> = {};
+  for (const lead of project.leads) {
+    const hit = cache[lead.id];
+    if (hit && hit.hash === briefHash(project, lead)) valid[lead.id] = hit.brief;
+  }
+  return valid;
+}
+
+export function saveBrief(project: Project, lead: Lead, brief: PersonaBrief) {
+  const file = briefFile(project.id);
+  return withLock(file, async () => {
+    const cache = await readJson<BriefCache>(file, {});
+    cache[lead.id] = { hash: briefHash(project, lead), brief, savedAt: new Date().toISOString() };
+    await writeJson(file, cache);
+  });
 }
 
 // ---------- Settings ----------

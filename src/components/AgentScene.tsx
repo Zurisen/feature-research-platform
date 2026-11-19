@@ -4,7 +4,7 @@ import { OrbitControls, QuadraticBezierLine } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { AgentState, deriveAgents, DEVELOPER_ID, pulsesFor, SceneAgent } from "@/lib/scene";
+import { AgentState, deriveAgents, DEVELOPER_ID, pulsesFor, SCEPTIC_ID, SceneAgent } from "@/lib/scene";
 import type { Project, Run } from "@/lib/types";
 
 // Realtime view of a run: the developer agent in the centre, lead agents around it, and messages
@@ -14,13 +14,13 @@ const PULSE_MS = 1400;
 const HEAD_Y = 1.25;
 
 type Pulse = { id: number; from: THREE.Vector3; to: THREE.Vector3; color: string; start: number };
-type Theme = { border: string; muted: string; good: string; bad: string; surface: string };
+type Theme = { border: string; muted: string; good: string; bad: string; surface: string; dark: boolean };
 
 function useTheme(): Theme {
   const read = (): Theme => {
     const css = getComputedStyle(document.documentElement);
     const v = (n: string, d: string) => css.getPropertyValue(n).trim() || d;
-    return { border: v("--border", "#444"), muted: v("--muted", "#888"), good: v("--good", "#2b8a3e"), bad: v("--bad", "#c92a2a"), surface: v("--surface", "#fff") };
+    return { border: v("--border", "#444"), muted: v("--muted", "#888"), good: v("--good", "#2b8a3e"), bad: v("--bad", "#c92a2a"), surface: v("--surface", "#fff"), dark: window.matchMedia("(prefers-color-scheme: dark)").matches };
   };
   const [theme, setTheme] = useState<Theme>(read);
   useEffect(() => {
@@ -47,6 +47,7 @@ function layout(agents: SceneAgent[]): Map<string, THREE.Vector3> {
   const pos = new Map<string, THREE.Vector3>();
   const leads = agents.filter((a) => a.role === "lead");
   pos.set(DEVELOPER_ID, new THREE.Vector3(0, 0.35, 0));
+  pos.set(SCEPTIC_ID, new THREE.Vector3(2.5, 0, 1.4)); // inside the ring, beside the developer
   leads.forEach((a, i) => {
     // Go round from the front, offset by half a step so no lead stands directly in front of the developer.
     const angle = Math.PI / 2 + ((i + 0.5) / Math.max(leads.length, 1)) * Math.PI * 2;
@@ -203,7 +204,7 @@ function World({ agents, pulses, theme, reduced, live, labels }: { agents: Scene
 export default function AgentScene({ run, project }: { run: Run; project: Project | null }) {
   const theme = useTheme();
   const reduced = useReducedMotion();
-  const agents = useMemo(() => deriveAgents(run, project), [run, project]);
+  const agents = useMemo(() => deriveAgents(run, project, theme.dark), [run, project, theme.dark]);
   const [pulses, setPulses] = useState<Pulse[]>([]);
   const labels = useRef(new Map<string, HTMLDivElement>());
   const seen = useRef<number | null>(null);

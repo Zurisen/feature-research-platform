@@ -94,6 +94,14 @@ export default function SettingsPage() {
               <input type="checkbox" checked={settings.debate} onChange={(e) => save({ ...settings, debate: e.target.checked })} />
               Let leads react to each other&apos;s feedback (doubles the lead agent calls)
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.sceptic} onChange={(e) => save({ ...settings, sceptic: e.target.checked })} />
+              Have a sceptic agent challenge the ranking before it is final (two extra agent calls)
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.reuseBriefs} onChange={(e) => save({ ...settings, reuseBriefs: e.target.checked })} />
+              Reuse persona briefs saved from earlier runs when a lead has not changed
+            </label>
             <div className="max-w-xs">
               <label className="label" htmlFor="cap">Team capacity (person-months per quarter)</label>
               <input id="cap" type="number" min={1} max={200} className="input" value={settings.teamCapacity} onChange={(e) => save({ ...settings, teamCapacity: Math.max(1, Math.min(200, Number(e.target.value) || 1)) })} />
