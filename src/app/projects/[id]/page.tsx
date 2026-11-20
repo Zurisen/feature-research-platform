@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Markdown from "@/components/Markdown";
 import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -146,7 +147,7 @@ export default function ProjectPage() {
       <section className="card space-y-3">
         <h2 className="font-semibold">Business</h2>
         <p className="hint">{[p.business.industry, p.business.employees && `${p.business.employees} employees`, p.business.website].filter(Boolean).join(" · ")}</p>
-        <p className="prose-block">{p.business.description}</p>
+        <Markdown>{p.business.description}</Markdown>
         {p.focusArea && <p className="text-sm"><span className="font-medium">Area to develop:</span> {p.focusArea}</p>}
         {p.extraContext && <p className="text-sm"><span className="font-medium">Extra context:</span> {p.extraContext}</p>}
       </section>

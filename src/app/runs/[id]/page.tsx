@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import Markdown from "@/components/Markdown";
 import NotesPanel from "@/components/NotesPanel";
 import RankingChart from "@/components/RankingChart";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -182,9 +183,9 @@ export default function RunPage() {
                         {run.insights?.quickWins.includes(r.featureId) && <span className="badge ml-2 text-good">Quick win</span>}
                         {run.insights?.bigBets.includes(r.featureId) && <span className="badge ml-2 text-warn">Big bet</span>}
                       </p>
-                      <p className="mt-1 text-muted">{r.rationale}</p>
+                      <div className="mt-1 text-muted"><Markdown inline>{r.rationale}</Markdown></div>
                       {r.champions.length > 0 && <p className="mt-1"><span className="text-good">Wanted by:</span> {r.champions.join(", ")}</p>}
-                      {r.concerns && <p className="mt-1"><span className="text-warn">Concern:</span> {r.concerns}</p>}
+                      {r.concerns && <div className="mt-1"><span className="text-warn">Concern:</span> <Markdown inline>{r.concerns}</Markdown></div>}
                       {run.critique?.challenges
                         .filter((c) => c.featureId === r.featureId)
                         .map((c, i) => (
@@ -217,7 +218,7 @@ export default function RunPage() {
           {run.summary && (
             <div>
               <h3 className="mb-1 font-semibold">Recommendation</h3>
-              <p className="prose-block">{run.summary}</p>
+              <Markdown title="Recommendation">{run.summary}</Markdown>
             </div>
           )}
           {run.critique && (
@@ -228,7 +229,7 @@ export default function RunPage() {
               <div className="mt-3 space-y-4 text-sm">
                 <div>
                   <h4 className="mb-1 font-medium">How far to trust this ranking</h4>
-                  <p className="prose-block">{run.critique.overall}</p>
+                  <Markdown title="How far to trust this ranking">{run.critique.overall}</Markdown>
                 </div>
                 {run.critique.weakLeads.length > 0 && (
                   <div>
@@ -252,7 +253,7 @@ export default function RunPage() {
                 {run.critiqueResponse && (
                   <div>
                     <h4 className="mb-1 font-medium">Developer agent&apos;s answer</h4>
-                    <p className="prose-block">{run.critiqueResponse}</p>
+                    <Markdown title="Developer agent's answer">{run.critiqueResponse}</Markdown>
                   </div>
                 )}
               </div>
@@ -302,7 +303,7 @@ export default function RunPage() {
       {run.research && (
         <details className="card">
           <summary className="cursor-pointer font-semibold">Developer agent research</summary>
-          <p className="prose-block mt-3">{run.research}</p>
+          <Markdown className="mt-3" title="Developer agent research">{run.research}</Markdown>
         </details>
       )}
 
@@ -330,7 +331,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
       {round.changelog && (
         <div className="rounded-lg bg-accent-soft p-3 text-sm">
           <p className="font-medium">What the developer agent changed for this round</p>
-          <p className="prose-block mt-1">{round.changelog}</p>
+          <Markdown className="mt-1" title="What the developer agent changed for this round">{round.changelog}</Markdown>
         </div>
       )}
       {round.features.map((f) => {
@@ -359,7 +360,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
                 {budget !== null && <span className="badge" title="Budget points the leads spent on this feature, out of 10 each">{Math.round(budget * 10) / 10} pts</span>}
               </span>
             </div>
-            <p className="mt-2 text-sm">{f.description}</p>
+            <div className="mt-2 text-sm"><Markdown inline>{f.description}</Markdown></div>
             <p className="mt-1 text-sm text-muted">Problem: {f.problem} · For: {f.targetUsers}</p>
             {reactions.length > 0 && (
               <ul className="mt-3 space-y-2 border-t border-border pt-3 text-sm">
@@ -369,7 +370,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
                       {r.first !== r.score ? `${r.first}→${r.score}` : `${r.score}/5`}
                     </span>
                     <span>
-                      <span className="font-medium">{leadName(r.leadId)}:</span> {r.comment}
+                      <span className="font-medium">{leadName(r.leadId)}:</span> <Markdown inline>{r.comment}</Markdown>
                       {r.topPick && <span className="badge ml-2">Top pick</span>}
                       {r.points !== undefined && r.points > 0 && <span className="badge ml-2">{Math.round(r.points * 10) / 10} pts</span>}
                       {r.rebuttal && <span className="mt-1 block text-muted">After hearing the others: {r.rebuttal}</span>}
@@ -387,7 +388,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
           <ul className="space-y-3 text-sm">
             {round.feedback.filter((f) => !f.error).map((f) => (
               <li key={f.leadId}>
-                <p><span className="font-medium">{leadName(f.leadId)}:</span> {f.overall}</p>
+                <div><span className="font-medium">{leadName(f.leadId)}:</span> <Markdown inline>{f.overall}</Markdown></div>
                 {f.quote && <p className="mt-1 italic">“{f.quote}”</p>}
                 {f.rebuttal?.closing && <p className="mt-1 text-muted">Closing: {f.rebuttal.closing}</p>}
                 {f.missing.length > 0 && <p className="mt-1 text-muted">Would also want: {f.missing.join("; ")}</p>}

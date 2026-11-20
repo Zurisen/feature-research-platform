@@ -96,7 +96,7 @@ export type Feature = z.infer<typeof FeatureSchema>;
 export const ResearchOutputSchema = z.object({
   researchSummary: z
     .string()
-    .describe("Markdown summary of the research: market, competitors, gaps, sources consulted."),
+    .describe("Markdown summary of the research: market, competitors, gaps, sources consulted. No title heading; the app adds one."),
   features: z.array(FeatureSchema).min(4).max(10),
 });
 export type ResearchOutput = z.infer<typeof ResearchOutputSchema>;
@@ -200,7 +200,7 @@ export const CritiqueSchema = z.object({
   weakLeads: z
     .array(z.object({ lead: z.string(), reason: z.string() }))
     .describe("Leads whose feedback deserves less weight, for example hypothetical leads or ones simulated from one line of profile."),
-  overall: z.string().describe("Markdown: how far the ranking as a whole can be trusted and what would change it most."),
+  overall: z.string().describe("Markdown: how far the ranking as a whole can be trusted and what would change it most. No title heading; the app adds one."),
 });
 export type Critique = z.infer<typeof CritiqueSchema>;
 
@@ -218,7 +218,7 @@ export const RankingOutputSchema = z.object({
       concerns: z.string().describe("Main objections or risks raised. Empty string if none."),
     }),
   ),
-  summary: z.string().describe("Markdown recommendation: what to build next and why."),
+  summary: z.string().describe("Markdown recommendation: what to build next and why. Start with the recommendation itself, not a title heading; the app adds one."),
 });
 export type RankingOutput = z.infer<typeof RankingOutputSchema>;
 
