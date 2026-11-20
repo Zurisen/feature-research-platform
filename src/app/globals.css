@@ -159,6 +159,12 @@ a.card:active {
 .btn:hover:not(:disabled) {
   background: var(--surface-2);
 }
+.btn-sm {
+  min-height: 28px;
+  padding: 0 10px;
+  font-size: 13px;
+  border-radius: 7px;
+}
 .btn:active:not(:disabled) {
   transform: translateY(1px);
 }

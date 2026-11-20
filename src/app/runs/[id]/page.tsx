@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { AllBriefsActions, FeatureBriefActions } from "@/components/BriefActions";
 import Markdown from "@/components/Markdown";
 import NotesPanel from "@/components/NotesPanel";
 import RankingChart from "@/components/RankingChart";
@@ -147,7 +148,10 @@ export default function RunPage() {
 
       {run.ranking && (
         <section className="card space-y-4">
-          <h2 className="text-lg font-semibold">Feature Ranking</h2>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h2 className="text-lg font-semibold">Feature Ranking</h2>
+            {run.status === "completed" && <AllBriefsActions run={run} project={project} />}
+          </div>
           <RankingChart ranking={run.ranking} />
           <div className="overflow-x-auto border-t border-border pt-2">
             <table className="w-full min-w-[720px] text-left text-sm [&_td]:align-top [&_td:nth-child(n+3)]:font-mono [&_td:nth-child(n+3)]:tabular-nums">
@@ -193,6 +197,7 @@ export default function RunPage() {
                             <span className={c.severity === "high" ? "text-bad" : "text-warn"}>Sceptic ({c.kind}):</span> {c.issue}
                           </p>
                         ))}
+                      <FeatureBriefActions run={run} project={project} featureId={r.featureId} title={r.title} />
                     </td>
                     <td className="py-3 pr-3 font-semibold">{r.rice}</td>
                     <td className="py-3 pr-3 whitespace-nowrap">{r.avgLeadScore !== null ? `${r.avgLeadScore}/5` : "—"}</td>
