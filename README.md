@@ -63,6 +63,10 @@ The two Python scripts need Python 3 on the PATH (or `PYTHON_PATH` in `.env.loca
 - `src/lib/store.ts`: JSON-file persistence.
 - `src/app`: pages and API routes.
 
+## License
+
+Apache License 2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE). The third-party skills and scripts under `vendor/` keep their own licences (Apache 2.0 and MIT).
+
 ## Support
 
 If this saves you time, you can buy me a coffee:
