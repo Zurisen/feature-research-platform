@@ -67,5 +67,4 @@ The two Python scripts need Python 3 on the PATH (or `PYTHON_PATH` in `.env.loca
 
 If this saves you time, you can buy me a coffee:
 
-<!-- Replace YOUR_USERNAME with your Buy Me a Coffee page name before publishing. -->
-<a href="https://buymeacoffee.com/YOUR_USERNAME"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Buy me a coffee" height="36"></a>
+<a href="https://buymeacoffee.com/zurisen"><img src="https://img.shields.io/badge/Buy%20me%20a%20coffee-FFDD00?style=for-the-badge&logo=buymeacoffee&logoColor=000000" alt="Buy me a coffee" height="36"></a>
