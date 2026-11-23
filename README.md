@@ -1,14 +1,16 @@
 # Feature Research Platform
 
-Decide what to build next. A developer agent researches feature ideas for a business, one agent per sales lead reacts to them over several rounds, a sceptic agent challenges the result, and you get a ranked roadmap you can hand straight to a coding agent.
+Decide what to build next. A team of developer agents explores feature ideas for a business from several angles, one agent per sales lead reacts to them over several rounds, a sceptic agent challenges the result, and you get a ranked roadmap with honest uncertainty ranges: what to build, what to test with real customers first, and what to park. Each feature exports as a brief you can hand straight to a coding agent.
 
 ![Agents researching features for the sample project](docs-assets/agents-run.gif)
 
-<sub>A run on the fictional sample project: the developer agent in the centre, the lead agents around it, the sceptic, and messages travelling between them. Sped up.</sub>
+<sub>A run on the fictional sample project, sped up: the developer team in the glass sphere (lead developer, explorers and estimators), the lead agents around it, the sceptic, and messages travelling between them. It ends on the build / validate / park portfolio and the ranking with likely ranges.</sub>
 
 It runs locally on your machine and uses your Claude Code login, so there is nothing to host and no API key to set up. Data stays in JSON files under `data/`.
 
 ## Run it
+
+You need Node.js 20.9 or later and [Claude Code](https://claude.com/claude-code) installed and logged in on this machine. Python 3 is optional (see below).
 
 ```bash
 npm install
@@ -17,7 +19,9 @@ npm run dev
 
 Open http://localhost:3000 and load the sample project from the home page, or create your own.
 
-Agents run through the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview), which uses the Claude Code login on this machine by default. To use an Anthropic API key instead, copy `.env.example` to `.env.local`, set `ANTHROPIC_API_KEY`, and switch the mode in Settings. Runs on the larger models can cost a few dollars; the run page shows the estimated cost, and Settings lets you pick cheaper models.
+Agents run through the [Claude Agent SDK](https://docs.claude.com/en/docs/agent-sdk/overview), which uses the Claude Code login on this machine by default. To use an Anthropic API key instead, copy `.env.example` to `.env.local`, set `ANTHROPIC_API_KEY`, and switch the mode in Settings.
+
+The run page shows the estimated cost as it goes. A two-round run on the sample project costs about $0.25 with Claude Haiku; with the larger models and web research a run can cost a few dollars. Settings lets you pick the models and turn each extra step on or off: persona briefs, exploration, the leads' debate, the sceptic, the number of wildcards per round and the number of independent estimates.
 
 ## How a run works
 
