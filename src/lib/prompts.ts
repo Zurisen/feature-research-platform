@@ -1,4 +1,4 @@
-import { Critique, Feature, finalPoints, finalScores, Lead, LeadFeedback, PersonaBrief, POINT_BUDGET, Project, Run, RunInsights, RunNote, RunRound } from "./types";
+import { Critique, Exploration, Feature, finalPoints, finalScores, Lead, LeadFeedback, ParkedIdea, PersonaBrief, POINT_BUDGET, Project, Run, RunInsights, RunNote, RunRound } from "./types";
 
 const line = (label: string, v: string) => (v.trim() ? `${label}: ${v.trim()}\n` : "");
 
@@ -139,7 +139,116 @@ ${
 Then propose 6 to 8 candidate features. Each should be concrete enough that a customer could say whether they would use it, and distinct from the others. Give the features ids F1, F2, and so on. In the research summary, cover the market context, what competitors do, the gaps you see, and the sources you relied on.`;
 }
 
-export function revisionPrompt(p: Project, round: RunRound) {
+// ---------- Diverge phase: explorer agents ----------
+
+/** Each explorer looks at the business through one lens, so the ideas do not all come from the same angle. */
+export const LENSES = [
+  {
+    id: "jobs",
+    letter: "J",
+    label: "Customer jobs",
+    brief:
+      "Start from the leads. For each kind of customer, work out what they are trying to get done, where they lose time, money or confidence today, and what they would have to justify to someone else. Every idea must trace back to a specific job or pain of named leads.",
+  },
+  {
+    id: "competitors",
+    letter: "C",
+    label: "Competitive gaps",
+    brief:
+      "Start from the market. Use the competitive-brief skill: what do competitors and substitutes offer that this business lacks (table stakes that block deals), and where are competitors weak, so that this business could lead? Prefer gaps customers would notice in an evaluation.",
+  },
+  {
+    id: "capabilities",
+    letter: "T",
+    label: "Capability push",
+    brief:
+      "Start from what the business has or is about to have: its technology, data, distribution and anything new described in the extra context. What does that make newly possible that customers would not think to ask for, because they do not know it can be done?",
+  },
+  {
+    id: "contrarian",
+    letter: "X",
+    label: "Contrarian and adjacent",
+    brief:
+      "Look where the others will not. Consider adjacent customer segments, packaging, pricing, services and onboarding rather than product features, removing something rather than adding it, and bolder versions of the obvious ideas. Include at least one deliberately unconventional bet, and say what would have to be true for it to win.",
+  },
+] as const;
+
+export function explorerPrompt(p: Project, briefs: Record<string, PersonaBrief>, lens: (typeof LENSES)[number], web: boolean) {
+  return `${businessBrief(p)}
+<leads>
+${leadsBlock(p, briefs)}
+</leads>
+
+You are one of several explorers generating feature ideas for this business${p.focusArea.trim() ? ", in the focus area above" : ""}. Each explorer uses a different lens, and a developer agent will later merge and shortlist everyone's ideas, so stay strictly within your lens and do not try to cover everything. Ideas that only you would find are the most valuable ones.
+
+Your lens: ${lens.label}.
+${lens.brief}
+
+Use the product-brainstorming skill to generate and pressure-test ideas. ${
+    web
+      ? "You may use web search, but keep it to about 2 to 5 searches that matter for your lens."
+      : "Web access is off for this run, so rely on the information above and your own knowledge."
+  }
+
+Return 3 to 6 ideas, each concrete enough that a customer could say whether they would use it, and a few sentences on what your lens revealed.`;
+}
+
+export function convergePrompt(p: Project, web: boolean, briefs: Record<string, PersonaBrief>, exploration: Exploration[]) {
+  const ideas = exploration
+    .filter((e) => !e.error)
+    .map(
+      (e) =>
+        `<lens name="${e.label}">
+What it revealed: ${e.notes}
+${e.ideas
+          .map((i) => `<idea id="${i.id}">
+Title: ${i.title}
+Description: ${i.description}
+Problem: ${i.problem}
+Effort: ${i.effort}
+Why: ${i.why}
+</idea>`)
+          .join("\n")}
+</lens>`,
+    )
+    .join("\n");
+  return `${businessBrief(p)}
+<leads>
+${leadsBlock(p, briefs)}
+</leads>
+
+Explorer agents looked at this business through different lenses and produced these ideas:
+
+${ideas}
+
+Turn them into the candidate feature list the leads will review. ${
+    web
+      ? "You may use web search to check specific claims or competitors, about 2 to 5 searches."
+      : "Web access is off for this run, so rely on the material above and your own knowledge."
+  }
+
+1. Merge ideas that solve the same problem for the same people, keeping the strongest framing. List the ids of the ideas each feature comes from in origins.
+2. Shortlist 6 to 8 features as a portfolio, not simply the best-sounding ones: cover the different kinds of leads, include at least one small (S) feature and at least one bold bet, and do not let a single lens supply more than half of the list unless the others produced nothing viable. An idea only one explorer found deserves a place if it is strong; that is what the exploration is for.
+3. Give the features ids F1, F2, and so on.
+4. Put every idea that is not part of a shortlisted feature in parked, with a one-sentence reason. Parked ideas may be brought back in later rounds.
+
+In the research summary, cover the market context, what competitors do, the gaps, where the explorers agreed or disagreed, and the sources you relied on. Use the competitive-brief skill where it helps.`;
+}
+
+export function revisionPrompt(p: Project, round: RunRound, opts: { wildcards: number; parked: ParkedIdea[]; finalRevision: boolean } = { wildcards: 0, parked: [], finalRevision: false }) {
+  const stage = opts.finalRevision
+    ? "The next round is the last one. Concentrate on sharpening scope and settling disagreements; restructure only what the feedback clearly demands."
+    : "This is an early round, so you can still restructure boldly: merge, split or re-scope features where the feedback points that way.";
+  const wild = opts.wildcards
+    ? `
+
+Exploration slot: add exactly ${opts.wildcards} wildcard feature${opts.wildcards > 1 ? "s" : ""}, an idea the leads have not seen yet. Take it from the parked ideas below or from what the leads said is missing, preferring ideas that could change the ranking if the leads like them rather than safe variations of existing features. A wildcard does not have to look like a winner; it is there to test whether something has been missed. List the wildcard ids in wildcards.${
+          opts.parked.length ? `
+
+Parked ideas from the exploration phase:
+${opts.parked.map((x) => `- ${x.ideaId} ${x.title}: parked because ${x.reason}`).join("\n")}` : ""
+        }`
+    : "\n\nNo wildcards are needed this round; return an empty wildcards list.";
   return `${businessBrief(p)}
 Here is the feature list the leads just reviewed (round ${round.round}):
 
@@ -149,7 +258,9 @@ Here is their feedback. Scores are where each lead ended up after hearing the ot
 
 ${feedbackDigest(round.feedback, p.leads)}
 
-Use the synthesize-research skill to pull the themes out of this feedback, then revise the feature list. Keep what resonated, sharpen or re-scope what got mixed reactions, drop what nobody wants, and add features the leads asked for when several of them would benefit. Keep the id of any feature that survives, even if reworded, and give new features new ids that have not been used before. Aim for 5 to 8 features.
+Use the synthesize-research skill to pull the themes out of this feedback, then revise the feature list. Keep what resonated, sharpen or re-scope what got mixed reactions, drop what nobody wants, and add features the leads asked for when several of them would benefit. Drop features that scored low with nearly every lead and got almost no budget points; their place is better spent on something untested. Keep the id of any feature that survives, even if reworded, and give new features new ids that have not been used before. Aim for 5 to 8 features${opts.wildcards ? " plus the wildcards" : ""}.
+
+${stage}${wild}
 
 Also write a short note to the leads saying what you changed because of their feedback and what you most want their view on in the next round.`;
 }
@@ -159,8 +270,9 @@ export function rankingPrompt(
   rounds: RunRound[],
   insights: Pick<RunInsights, "themes" | "painPoints" | "requests">,
   teamCapacity: number,
-  challenge?: { critique: Critique; draft: string },
+  opts: { evidence?: string; challenge?: { critique: Critique; draft: string } } = {},
 ) {
+  const challenge = opts.challenge;
   const last = rounds[rounds.length - 1];
   const history = rounds
     .slice(0, -1)
@@ -188,14 +300,20 @@ Final round feedback:
 
 ${feedbackDigest(last.feedback, p.leads)}
 
-${history ? `Earlier rounds, for context:\n\n${history}\n` : ""}${analysis ? `Automated analysis of the feedback:\n${analysis}\n` : ""}
+${history ? `Earlier rounds, for context:\n\n${history}\n` : ""}${analysis ? `Automated analysis of the feedback:\n${analysis}\n` : ""}${
+    opts.evidence
+      ? `\nHow firm the lead support is. The likely range comes from resampling the leads, so a wide range means the support depends on which leads you happen to ask:\n${opts.evidence}\n`
+      : ""
+  }
 Produce the prioritisation, using the roadmap-update skill's prioritisation guidance. For every feature in the final list give RICE inputs:
 - reach: your estimate of how many of this business's customers and prospects it affects per quarter, as a number.
 - impact: massive, high, medium, low or minimal, per affected customer.
 - confidence: high, medium or low. Use lower confidence when leads disagreed or the evidence is thin.
 - effort: xs (about 1 person-month), s (3), m (5), l (8) or xl (13).
 
-A script computes the score from your inputs as reach x impact x confidence / effort and lays the features out quarter by quarter against a team capacity of ${teamCapacity} person-months per quarter, so make the inputs reflect your actual judgement. Explain each feature briefly, name the leads who most wanted it, and state the main concern raised.
+A script computes the score from your inputs as reach x impact x confidence / effort and lays the features out quarter by quarter against a team capacity of ${teamCapacity} person-months per quarter, so make the inputs reflect your actual judgement. Reach is the input that varies most between estimates, so anchor it in something stated (the number of customers in a segment, how many leads it applies to) and say what you anchored it on in the rationale. Explain each feature briefly, name the leads who most wanted it, and state the main concern raised.
+
+Put every feature on a track. build: support is strong and consistent across the leads, and the estimates rest on evidence. validate: the upside could be large but the evidence is thin or the leads split, so it should be tested cheaply with real customers before anyone builds it; describe that test in experiment (what to show or ask, whom, and what result would move it to build). park: weak support. A good plan has some of each where the evidence allows; do not put a feature on build just because it ranks high if its support is narrow.
 
 Finish with a short recommendation of what to build next and why, including anything you would validate with real customers first.${
     challenge

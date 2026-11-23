@@ -7,6 +7,7 @@ import { useEffect, useState } from "react";
 import { AllBriefsActions, FeatureBriefActions } from "@/components/BriefActions";
 import Markdown from "@/components/Markdown";
 import NotesPanel from "@/components/NotesPanel";
+import { ExplorationPanel, Portfolio, TrackBadge } from "@/components/Portfolio";
 import RankingChart from "@/components/RankingChart";
 import { StatusBadge } from "@/components/StatusBadge";
 import { api } from "@/lib/client";
@@ -152,6 +153,7 @@ export default function RunPage() {
             <h2 className="text-lg font-semibold">Feature Ranking</h2>
             {run.status === "completed" && <AllBriefsActions run={run} project={project} />}
           </div>
+          <Portfolio ranking={run.ranking} />
           <RankingChart ranking={run.ranking} />
           <div className="overflow-x-auto border-t border-border pt-2">
             <table className="w-full min-w-[720px] text-left text-sm [&_td]:align-top [&_td:nth-child(n+3)]:font-mono [&_td:nth-child(n+3)]:tabular-nums">
@@ -159,7 +161,7 @@ export default function RunPage() {
                 <tr className="border-b border-border">
                   <th className="py-2 pr-3 font-medium">#</th>
                   <th className="py-2 pr-3 font-medium">Feature</th>
-                  <th className="py-2 pr-3 font-medium" title="Reach × Impact × Confidence ÷ Effort">RICE</th>
+                  <th className="py-2 pr-3 font-medium" title="Reach × Impact × Confidence ÷ Effort, with the likely range from resampling the leads and the independent estimates">RICE</th>
                   <th className="py-2 pr-3 font-medium" title="Average score from the final round">Leads</th>
                   <th className="py-2 pr-3 font-medium" title="Share of all the leads' 10-point budgets spent on it">Budget</th>
                   <th className="py-2 pr-3 font-medium" title="Share of leads who chose it as their single top feature">1st choice</th>
@@ -175,6 +177,11 @@ export default function RunPage() {
                   <tr key={r.featureId} className="border-b border-border align-top last:border-0">
                     <td className="py-3 pr-3 font-semibold whitespace-nowrap">
                       {r.rank}
+                      {r.rankLow != null && r.rankHigh != null && r.rankLow !== r.rankHigh && (
+                        <span className="block text-xs font-normal text-muted" title="Likely rank range across resampled leads and estimates">
+                          {r.rankLow}–{r.rankHigh}
+                        </span>
+                      )}
                       {r.draftRank != null && r.draftRank !== r.rank && (
                         <span className={`ml-1 text-xs font-normal ${r.draftRank > r.rank ? "text-good" : "text-bad"}`} title={`Was #${r.draftRank} before the sceptic's challenge`}>
                           {r.draftRank > r.rank ? "▲" : "▼"}{Math.abs(r.draftRank - r.rank)}
@@ -186,10 +193,14 @@ export default function RunPage() {
                         {r.title}
                         {run.insights?.quickWins.includes(r.featureId) && <span className="badge ml-2 text-good">Quick win</span>}
                         {run.insights?.bigBets.includes(r.featureId) && <span className="badge ml-2 text-warn">Big bet</span>}
+                        <TrackBadge track={r.track} />
                       </p>
                       <div className="mt-1 text-muted"><Markdown inline>{r.rationale}</Markdown></div>
                       {r.champions.length > 0 && <p className="mt-1"><span className="text-good">Wanted by:</span> {r.champions.join(", ")}</p>}
                       {r.concerns && <div className="mt-1"><span className="text-warn">Concern:</span> <Markdown inline>{r.concerns}</Markdown></div>}
+                      {r.track === "validate" && r.experiment?.trim() && (
+                        <div className="mt-1"><span className="text-warn">Test first:</span> <Markdown inline>{r.experiment}</Markdown></div>
+                      )}
                       {run.critique?.challenges
                         .filter((c) => c.featureId === r.featureId)
                         .map((c, i) => (
@@ -199,7 +210,14 @@ export default function RunPage() {
                         ))}
                       <FeatureBriefActions run={run} project={project} featureId={r.featureId} title={r.title} />
                     </td>
-                    <td className="py-3 pr-3 font-semibold">{r.rice}</td>
+                    <td className="py-3 pr-3 whitespace-nowrap">
+                      <span className="font-semibold">{r.rice}</span>
+                      {r.riceLow != null && r.riceHigh != null && (
+                        <span className="block text-xs text-muted" title={r.estimateRice?.length ? `Independent estimates: ${r.estimateRice.join(", ")}` : undefined}>
+                          {r.riceLow}–{r.riceHigh}
+                        </span>
+                      )}
+                    </td>
                     <td className="py-3 pr-3 whitespace-nowrap">{r.avgLeadScore !== null ? `${r.avgLeadScore}/5` : "—"}</td>
                     <td className="py-3 pr-3">{r.pointsShare != null ? `${Math.round(r.pointsShare * 100)}%` : "—"}</td>
                     <td className="py-3 pr-3">{r.firstChoiceShare !== undefined ? `${Math.round(r.firstChoiceShare * 100)}%` : "—"}</td>
@@ -214,6 +232,13 @@ export default function RunPage() {
             </table>
           </div>
           <p className="hint">
+            {run.ranking.some((r) => r.riceLow != null) && (
+              <>
+                Features are ordered by the low end of their likely RICE range, so a feature only ranks high if it still looks good when the
+                leads who liked it least, and the most cautious of the {run.estimates?.length ?? 1} independent estimate{(run.estimates?.length ?? 1) > 1 ? "s" : ""}, are the ones
+                that count. The small figures under the rank and score are those likely ranges.{" "}
+              </>
+            )}
             RICE inputs are the developer agent&apos;s estimates
             {run.insights && <>, scored by {run.insights.scoredBy === "built-in" ? "the built-in formula" : <code>rice_prioritizer.py</code>}</>}.
             Quarters assume {run.settings.teamCapacity ?? 10} person-months of capacity each. Lead agents are simulated from profile
@@ -305,6 +330,8 @@ export default function RunPage() {
         </details>
       )}
 
+      <ExplorationPanel run={run} />
+
       {run.research && (
         <details className="card">
           <summary className="cursor-pointer font-semibold">Developer agent research</summary>
@@ -358,7 +385,14 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
         return (
           <div key={f.id} className="rounded-lg border border-border p-4">
             <div className="flex flex-wrap items-start justify-between gap-2">
-              <h3 className="font-semibold">{f.id} · {f.title}</h3>
+              <h3 className="font-semibold">
+                {f.id} · {f.title}
+                {round.wildcards?.includes(f.id) && (
+                  <span className="badge ml-2 text-accent" title="Added as a wildcard: an untested idea, to check whether something has been missed">
+                    Wildcard
+                  </span>
+                )}
+              </h3>
               <span className="flex gap-2">
                 <span className="badge">Effort {f.effort}</span>
                 {avg !== null && <span className="badge">{avg.toFixed(1)}/5 from {reactions.length}</span>}
@@ -367,6 +401,7 @@ function RoundView({ round, leadCount, leadName }: { round: RunRound; leadCount:
             </div>
             <div className="mt-2 text-sm"><Markdown inline>{f.description}</Markdown></div>
             <p className="mt-1 text-sm text-muted">Problem: {f.problem} · For: {f.targetUsers}</p>
+            {f.origins && f.origins.length > 0 && <p className="hint mt-1">From explorer ideas {f.origins.join(", ")}</p>}
             {reactions.length > 0 && (
               <ul className="mt-3 space-y-2 border-t border-border pt-3 text-sm">
                 {reactions.map((r) => (

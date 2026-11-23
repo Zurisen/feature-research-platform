@@ -78,6 +78,12 @@ export const SettingsSchema = z.object({
   reuseBriefs: z.boolean().default(true),
   // Person-months the team can spend per quarter; used to lay the ranking out as a roadmap.
   teamCapacity: z.number().int().min(1).max(200).default(10),
+  // Several explorer agents, each with a different lens, generate ideas before the developer agent shortlists them.
+  diverge: z.boolean().default(true),
+  // New, untested features the developer agent must add in every revision, so the list never freezes.
+  wildcards: z.number().int().min(0).max(2).default(1),
+  // Independent RICE estimates taken for the draft ranking; the median is used and the spread feeds the score ranges.
+  estimateSamples: z.number().int().min(1).max(5).default(3),
 });
 export type Settings = z.infer<typeof SettingsSchema>;
 
@@ -91,7 +97,44 @@ export const FeatureSchema = z.object({
   targetUsers: z.string(),
   effort: z.enum(["S", "M", "L", "XL"]),
 });
-export type Feature = z.infer<typeof FeatureSchema>;
+export type Feature = z.infer<typeof FeatureSchema> & {
+  origins?: string[]; // explorer idea ids this feature came from (diverge phase)
+};
+
+// ---------- Diverge phase: explorer agents with different lenses ----------
+
+export const ExplorerOutputSchema = z.object({
+  notes: z.string().describe("What this lens revealed about the business and its customers, 2-5 sentences of plain text."),
+  ideas: z
+    .array(
+      z.object({
+        title: z.string(),
+        description: z.string().describe("What it does, 2-3 sentences."),
+        problem: z.string().describe("The customer problem it solves, and for whom."),
+        effort: z.enum(["S", "M", "L", "XL"]),
+        why: z.string().describe("Why this lens points to it: the evidence or reasoning, 1-2 sentences."),
+      }),
+    )
+    .min(3)
+    .max(6),
+});
+export type ExplorerOutput = z.infer<typeof ExplorerOutputSchema>;
+export type ExplorerIdea = ExplorerOutput["ideas"][number] & { id: string };
+export type Exploration = { lens: string; label: string; notes: string; ideas: ExplorerIdea[]; error?: string };
+
+export const ConvergeOutputSchema = z.object({
+  researchSummary: z
+    .string()
+    .describe("Markdown summary: market context, what competitors do, the gaps, what the explorers agreed and disagreed on, and sources. No title heading; the app adds one."),
+  features: z
+    .array(FeatureSchema.extend({ origins: z.array(z.string()).describe("Ids of the explorer ideas this feature comes from.") }))
+    .min(4)
+    .max(10),
+  parked: z
+    .array(z.object({ ideaId: z.string(), reason: z.string().describe("Why it was not shortlisted, one sentence.") }))
+    .describe("Every explorer idea that is not part of a shortlisted feature."),
+});
+export type ParkedIdea = { ideaId: string; title: string; reason: string };
 
 export const ResearchOutputSchema = z.object({
   researchSummary: z
@@ -171,6 +214,7 @@ export const RevisionOutputSchema = z.object({
   noteToLeads: z
     .string()
     .describe("Short message to the leads: what you changed based on their feedback and what you want them to weigh in on next."),
+  wildcards: z.array(z.string()).describe("Ids of the wildcard features added in this revision. Empty if none were asked for."),
 });
 export type RevisionOutput = z.infer<typeof RevisionOutputSchema>;
 
@@ -216,6 +260,12 @@ export const RankingOutputSchema = z.object({
       rationale: z.string(),
       champions: z.array(z.string()).describe("Names of leads who most wanted it."),
       concerns: z.string().describe("Main objections or risks raised. Empty string if none."),
+      track: z
+        .enum(["build", "validate", "park"])
+        .describe("build: strong, consistent evidence; plan it. validate: promising but uncertain; test cheaply with real customers first. park: weak support."),
+      experiment: z
+        .string()
+        .describe("For validate: the cheapest test with real customers that would settle it: what to show or ask, whom, and what result would move it to build. Empty string otherwise."),
     }),
   ),
   summary: z.string().describe("Markdown recommendation: what to build next and why. Start with the recommendation itself, not a title heading; the app adds one."),
@@ -237,6 +287,15 @@ export type RankedFeature = RankingOutput["ranked"][number] & {
   pointsShare: number | null; // 0-1, share of all leads' 10-point budgets spent on it
   draftRank: number | null; // rank before the sceptic's challenge
   quarter: number | null; // quarter it lands in given team capacity
+  // Uncertainty (older runs lack these). The ranking is ordered by riceLow.
+  riceLow?: number; // 10th percentile across resampled leads and the independent estimates
+  riceHigh?: number; // 90th percentile
+  rankLow?: number; // best likely rank
+  rankHigh?: number; // worst likely rank
+  pTop?: number; // share of resamples in which it is in the top 3
+  leadLow?: number | null; // likely range of the mean lead score
+  leadHigh?: number | null;
+  estimateRice?: number[]; // RICE from each independent estimate of the draft ranking
 };
 
 export type RunInsights = {
@@ -288,6 +347,7 @@ export type RunRound = {
   features: Feature[];
   noteToLeads?: string;
   changelog?: string;
+  wildcards?: string[]; // ids of features added as wildcards in this round
   feedback: LeadFeedback[];
 };
 
@@ -300,6 +360,9 @@ export type Run = {
   createdAt: string;
   finishedAt?: string;
   research?: string;
+  exploration?: Exploration[]; // diverge phase, one entry per lens
+  parked?: ParkedIdea[]; // explorer ideas not shortlisted; the pool wildcards can come from
+  estimates?: RankingOutput["ranked"][]; // the independent draft estimates
   briefs?: Record<string, PersonaBrief>; // by lead id
   rounds: RunRound[];
   insights?: RunInsights;

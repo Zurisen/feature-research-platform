@@ -4,14 +4,17 @@ import { OrbitControls, QuadraticBezierLine } from "@react-three/drei";
 import { Canvas, useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
-import { AgentState, deriveAgents, DEVELOPER_ID, pulsesFor, SCEPTIC_ID, SceneAgent } from "@/lib/scene";
+import { AgentState, deriveAgents, deriveTeam, DEVELOPER_ID, pulsesFor, SCEPTIC_ID, SceneAgent, TeamMember } from "@/lib/scene";
 import type { Project, Run } from "@/lib/types";
 
-// Realtime view of a run: the developer agent in the centre, lead agents around it, and messages
-// travelling between them as events arrive. Purely a projection of the polled run state.
+// Realtime view of a run: the developer team in the centre (a glass sphere with its agents moving
+// inside), lead agents around it, and messages travelling between them as events arrive. Purely a
+// projection of the polled run state.
 
 const PULSE_MS = 1400;
 const HEAD_Y = 1.25;
+const TEAM_Y = 1.55; // centre of the team sphere above the pedestal
+const TEAM_R = 1.75;
 
 type Pulse = { id: number; from: THREE.Vector3; to: THREE.Vector3; color: string; start: number };
 type Theme = { border: string; muted: string; good: string; bad: string; surface: string; dark: boolean };
@@ -95,6 +98,107 @@ function Figure({ agent, position, theme, reduced }: { agent: SceneAgent; positi
   );
 }
 
+/** A small figure that wanders inside the team sphere: quickly while working, slowly otherwise. */
+function Member({ member, index, count, reduced }: { member: TeamMember; index: number; count: number; reduced: boolean }) {
+  const ref = useRef<THREE.Group>(null);
+  const phase = useRef(index * 1.7);
+  // A resting spot on a small ring, used for reduced motion and as the centre of each wander.
+  const home = useMemo(() => {
+    const a = (index / Math.max(count, 1)) * Math.PI * 2;
+    return new THREE.Vector3(Math.cos(a) * 0.7, (index % 3) * 0.35 - 0.1, Math.sin(a) * 0.7);
+  }, [index, count]);
+  const working = member.state === "working";
+  const scale = member.kind === "lead" ? 0.62 : 0.48;
+
+  useFrame((_, dt) => {
+    if (!ref.current) return;
+    if (reduced) {
+      ref.current.position.copy(home);
+      return;
+    }
+    phase.current += dt * (working ? 0.9 : member.state === "idle" ? 0.25 : 0.15);
+    const t = phase.current;
+    const p = ref.current.position;
+    // Sums of sines at unrelated frequencies give a smooth path that does not visibly repeat.
+    p.set(
+      home.x + Math.sin(t * 1.3 + index) * 0.45 + Math.sin(t * 0.7 + index * 2) * 0.2,
+      home.y + Math.sin(t * 1.1 + index * 3) * 0.5,
+      home.z + Math.cos(t * 0.9 + index) * 0.45 + Math.cos(t * 1.7 + index * 5) * 0.15,
+    );
+    const limit = TEAM_R - 0.7; // keep the whole figure inside the glass
+    if (p.length() > limit) p.setLength(limit);
+    // Face the direction of travel.
+    ref.current.rotation.y = Math.atan2(Math.cos(t * 1.3 + index), -Math.sin(t * 0.9 + index));
+    ref.current.rotation.z = working ? Math.sin(t * 6) * 0.12 : 0;
+  });
+
+  const glow = working ? 0.6 : 0.08;
+  const opacity = member.state === "idle" ? 0.45 : 1;
+  return (
+    <group ref={ref} position={home} scale={scale}>
+      <mesh position={[0, -0.35, 0]}>
+        <capsuleGeometry args={[0.3, 0.5, 8, 16]} />
+        <meshStandardMaterial color={member.color} emissive={member.color} emissiveIntensity={glow} roughness={0.45} transparent opacity={opacity} />
+      </mesh>
+      <mesh position={[0, 0.4, 0]}>
+        <sphereGeometry args={[0.26, 20, 20]} />
+        <meshStandardMaterial color={member.color} emissive={member.color} emissiveIntensity={glow} roughness={0.45} transparent opacity={opacity} />
+      </mesh>
+      {member.state === "error" && (
+        <mesh position={[0, 0.95, 0]}>
+          <sphereGeometry args={[0.12, 12, 12]} />
+          <meshBasicMaterial color="#e34948" />
+        </mesh>
+      )}
+    </group>
+  );
+}
+
+/** The developer team: a glass sphere on the pedestal with each of its agents moving inside. */
+function Team({ agent, team, position, theme, reduced }: { agent: SceneAgent; team: TeamMember[]; position: THREE.Vector3; theme: Theme; reduced: boolean }) {
+  const ring = useRef<THREE.Mesh>(null);
+  const glass = useRef<THREE.Mesh>(null);
+  const working = team.some((m) => m.state === "working");
+  const ringColor = agent.state === "done" ? theme.good : agent.state === "error" ? theme.bad : working ? theme.muted : theme.border;
+
+  useFrame(({ clock }) => {
+    const t = clock.elapsedTime;
+    if (ring.current) ring.current.rotation.z = working && !reduced ? -t * 1.5 : 0;
+    if (glass.current) glass.current.scale.setScalar(working && !reduced ? 1 + Math.sin(t * 2.2) * 0.012 : 1);
+  });
+
+  return (
+    <group position={position}>
+      <mesh ref={ring} rotation={[-Math.PI / 2, 0, 0]} position={[0, 0.04, 0]}>
+        <torusGeometry key={working ? "arc" : "full"} args={[1.45, 0.05, 12, 80, working ? Math.PI * 1.5 : Math.PI * 2]} />
+        <meshBasicMaterial color={ringColor} />
+      </mesh>
+      <group position={[0, TEAM_Y, 0]}>
+        {/* Glass: a faint inner face for depth and a brighter outer face, both without writing depth so the figures stay visible. */}
+        <mesh ref={glass} renderOrder={2}>
+          <sphereGeometry args={[TEAM_R, 48, 48]} />
+          <meshPhysicalMaterial
+            color={theme.dark ? "#cfe9e8" : "#e8f3f3"}
+            roughness={0.08}
+            metalness={0}
+            clearcoat={1}
+            transparent
+            opacity={theme.dark ? 0.14 : 0.22}
+            depthWrite={false}
+          />
+        </mesh>
+        <mesh renderOrder={1}>
+          <sphereGeometry args={[TEAM_R * 0.995, 48, 48]} />
+          <meshBasicMaterial color={theme.muted} transparent opacity={0.06} side={THREE.BackSide} depthWrite={false} />
+        </mesh>
+        {team.map((m, i) => (
+          <Member key={m.id} member={m} index={i} count={team.length} reduced={reduced} />
+        ))}
+      </group>
+    </group>
+  );
+}
+
 type LabelRefs = React.RefObject<Map<string, HTMLDivElement>>;
 
 /** Keeps the DOM labels (rendered outside the canvas) pinned above each agent's head. */
@@ -105,8 +209,7 @@ function LabelProjector({ agents, pos, labels }: { agents: SceneAgent[]; pos: Ma
       const el = labels.current.get(a.id);
       const base = pos.get(a.id);
       if (!el || !base) continue;
-      const scale = a.role === "developer" ? 1.35 : 1;
-      v.set(base.x, base.y + (HEAD_Y + 0.55) * scale, base.z).project(camera);
+      v.set(base.x, base.y + (a.role === "developer" ? TEAM_Y + TEAM_R + 0.2 : HEAD_Y + 0.55), base.z).project(camera);
       const x = (v.x * 0.5 + 0.5) * size.width;
       const y = (-v.y * 0.5 + 0.5) * size.height;
       el.style.transform = `translate(${x.toFixed(1)}px, ${y.toFixed(1)}px) translate(-50%, -100%)`;
@@ -144,7 +247,23 @@ function PulseDot({ pulse, reduced }: { pulse: Pulse; reduced: boolean }) {
   );
 }
 
-function World({ agents, pulses, theme, reduced, live, labels }: { agents: SceneAgent[]; pulses: Pulse[]; theme: Theme; reduced: boolean; live: boolean; labels: LabelRefs }) {
+function World({
+  agents,
+  team,
+  pulses,
+  theme,
+  reduced,
+  live,
+  labels,
+}: {
+  agents: SceneAgent[];
+  team: TeamMember[];
+  pulses: Pulse[];
+  theme: Theme;
+  reduced: boolean;
+  live: boolean;
+  labels: LabelRefs;
+}) {
   const pos = useMemo(() => layout(agents), [agents]);
   const dev = pos.get(DEVELOPER_ID)!;
   const at = (id: string) => pos.get(id)!.clone().setY(pos.get(id)!.y + HEAD_Y);
@@ -180,9 +299,13 @@ function World({ agents, pulses, theme, reduced, live, labels }: { agents: Scene
             />
           );
         })}
-      {agents.map((a) => (
-        <Figure key={a.id} agent={a} position={a.id === DEVELOPER_ID ? dev : pos.get(a.id)!} theme={theme} reduced={reduced} />
-      ))}
+      {agents.map((a) =>
+        a.id === DEVELOPER_ID ? (
+          <Team key={a.id} agent={a} team={team} position={dev} theme={theme} reduced={reduced} />
+        ) : (
+          <Figure key={a.id} agent={a} position={pos.get(a.id)!} theme={theme} reduced={reduced} />
+        ),
+      )}
       {pulses.map((p) => (
         <PulseDot key={p.id} pulse={p} reduced={reduced} />
       ))}
@@ -205,6 +328,7 @@ export default function AgentScene({ run, project }: { run: Run; project: Projec
   const theme = useTheme();
   const reduced = useReducedMotion();
   const agents = useMemo(() => deriveAgents(run, project, theme.dark), [run, project, theme.dark]);
+  const team = useMemo(() => deriveTeam(run, theme.dark), [run, theme.dark]);
   const [pulses, setPulses] = useState<Pulse[]>([]);
   const labels = useRef(new Map<string, HTMLDivElement>());
   const seen = useRef<number | null>(null);
@@ -238,11 +362,12 @@ export default function AgentScene({ run, project }: { run: Run; project: Projec
     setTimeout(() => setPulses((cur) => cur.filter((p) => !ids.has(p.id))), PULSE_MS + fresh.length * 180 + 200);
   }, [run.events, agents]);
 
-  const working = agents.filter((a) => a.state === "working").length;
+  const crowd = [...agents.filter((a) => a.id !== DEVELOPER_ID), ...team];
+  const working = crowd.filter((a) => a.state === "working").length;
   return (
-    <div className="relative h-[440px] w-full overflow-hidden rounded-lg" role="img" aria-label={`Agent view: ${run.phase}. ${working} of ${agents.length} agents working.`}>
+    <div className="relative h-[440px] w-full overflow-hidden rounded-lg" role="img" aria-label={`Agent view: ${run.phase}. ${working} of ${crowd.length} agents working.`}>
       <Canvas camera={{ position: [0, 6.2, 12.5], fov: 42 }} dpr={[1, 2]} gl={{ antialias: true, alpha: true }}>
-        <World agents={agents} pulses={pulses} theme={theme} reduced={reduced} live={run.status === "running"} labels={labels} />
+        <World agents={agents} team={team} pulses={pulses} theme={theme} reduced={reduced} live={run.status === "running"} labels={labels} />
       </Canvas>
       <div className="pointer-events-none absolute inset-0" aria-hidden="true">
         {agents.map((a) => (
@@ -266,7 +391,7 @@ export default function AgentScene({ run, project }: { run: Run; project: Projec
       </div>
       <div className="pointer-events-none absolute left-3 top-3 text-sm">
         <p className="font-medium">{run.phase}</p>
-        <p className="hint">{run.status === "running" ? `${working} of ${agents.length} agents working` : "Drag to rotate, scroll to zoom"}</p>
+        <p className="hint">{run.status === "running" ? `${working} of ${crowd.length} agents working` : "Drag to rotate, scroll to zoom"}</p>
       </div>
     </div>
   );

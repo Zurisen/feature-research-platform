@@ -7,11 +7,19 @@ import type { RankedFeature } from "@/lib/types";
 // (never one chart with two axes). One hue per panel; values sit at the bar tips in text colour.
 // The table below the chart is the full table view of the same data.
 
-function Bar({ value, max, color, label, delay }: { value: number; max: number; color: string; label: string; delay: number }) {
+function Bar({ value, max, color, label, delay, range }: { value: number; max: number; color: string; label: string; delay: number; range?: [number, number] }) {
   const pct = max > 0 ? Math.max((value / max) * 100, value > 0 ? 1.5 : 0) : 0;
+  const at = (v: number) => (max > 0 ? Math.min((v / max) * 100, 100) : 0);
   return (
     <div className="flex min-w-0 items-center gap-2">
-      <div className="h-3.5 min-w-0 flex-1 border-l border-border-strong">
+      <div className="relative h-3.5 min-w-0 flex-1 border-l border-border-strong">
+        {range && (
+          <span
+            aria-hidden="true"
+            className="absolute top-1/2 z-[1] h-0 border-t-2 border-text/70 before:absolute before:-top-[5px] before:left-0 before:h-2 before:border-l-2 before:border-text/70 after:absolute after:-top-[5px] after:right-0 after:h-2 after:border-r-2 after:border-text/70"
+            style={{ left: `${at(range[0])}%`, width: `${Math.max(at(range[1]) - at(range[0]), 0.5)}%` }}
+          />
+        )}
         <motion.div
           className="h-full rounded-r-[4px]"
           style={{ background: color, width: `${pct}%`, transformOrigin: "left" }}
@@ -26,7 +34,8 @@ function Bar({ value, max, color, label, delay }: { value: number; max: number; 
 }
 
 export default function RankingChart({ ranking }: { ranking: RankedFeature[] }) {
-  const maxRice = Math.max(...ranking.map((r) => r.rice), 0);
+  const maxRice = Math.max(...ranking.map((r) => Math.max(r.rice, r.riceHigh ?? 0)), 0);
+  const ranged = ranking.some((r) => r.riceLow != null);
   const hasBudget = ranking.some((r) => r.pointsShare != null);
   const maxShare = Math.max(...ranking.map((r) => r.pointsShare ?? 0), 0);
   const cols = hasBudget ? "grid-cols-[1.25rem_minmax(0,1fr)_minmax(0,1fr)] sm:grid-cols-[1.5rem_minmax(0,1.3fr)_minmax(0,1fr)_minmax(0,1fr)]" : "grid-cols-[1.5rem_minmax(0,1fr)_minmax(0,1.4fr)]";
@@ -41,7 +50,7 @@ export default function RankingChart({ ranking }: { ranking: RankedFeature[] }) 
         <span className="hint">Feature</span>
         <span className="hint flex items-center gap-1.5">
           <i aria-hidden="true" className="h-2 w-2 rounded-sm bg-viz-1" />
-          RICE score
+          RICE score{ranged && <span className="text-muted"> ├┤ range</span>}
         </span>
         {hasBudget && (
           <span className="hint hidden items-center gap-1.5 sm:flex">
@@ -55,7 +64,14 @@ export default function RankingChart({ ranking }: { ranking: RankedFeature[] }) 
             <span className="truncate font-medium" title={r.title}>
               {r.title}
             </span>
-            <Bar value={r.rice} max={maxRice} color="var(--viz-1)" label={String(r.rice)} delay={i * 0.04} />
+            <Bar
+              value={r.rice}
+              max={maxRice}
+              color="var(--viz-1)"
+              label={String(r.rice)}
+              delay={i * 0.04}
+              range={r.riceLow != null && r.riceHigh != null ? [r.riceLow, r.riceHigh] : undefined}
+            />
             {hasBudget && (
               <div className="hidden sm:block">
                 <Bar value={r.pointsShare ?? 0} max={maxShare} color="var(--viz-2)" label={`${Math.round((r.pointsShare ?? 0) * 100)}%`} delay={i * 0.04 + 0.05} />
@@ -69,6 +85,16 @@ export default function RankingChart({ ranking }: { ranking: RankedFeature[] }) 
               <dl className="mt-1.5 grid grid-cols-[auto_auto] gap-x-4 gap-y-0.5">
                 <dt className="text-muted">RICE score</dt>
                 <dd className="num text-right">{r.rice}</dd>
+                {r.riceLow != null && (
+                  <>
+                    <dt className="text-muted">Likely range</dt>
+                    <dd className="num text-right">{r.riceLow}–{r.riceHigh}</dd>
+                    <dt className="text-muted">Likely rank</dt>
+                    <dd className="num text-right">{r.rankLow === r.rankHigh ? r.rankLow : `${r.rankLow}–${r.rankHigh}`}</dd>
+                    <dt className="text-muted">In the top 3</dt>
+                    <dd className="num text-right">{Math.round((r.pTop ?? 0) * 100)}% of resamples</dd>
+                  </>
+                )}
                 <dt className="text-muted">Average lead score</dt>
                 <dd className="num text-right">{r.avgLeadScore != null ? `${r.avgLeadScore}/5` : "–"}</dd>
                 {r.pointsShare != null && (

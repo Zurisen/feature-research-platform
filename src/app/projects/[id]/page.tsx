@@ -46,7 +46,7 @@ export default function ProjectPage() {
   if (!data) return <p className="hint">Loading…</p>;
   const { project: p, runs } = data;
   const agentCalls = settings
-    ? 2 + (settings.rounds - 1) + (settings.sceptic ? 2 : 0) + settings.rounds * p.leads.length * (settings.debate ? 2 : 1) + (settings.personaBriefs ? p.leads.length : 0)
+    ? 2 + (settings.rounds - 1) + (settings.sceptic ? 2 : 0) + (settings.diverge ? 4 : 0) + (settings.estimateSamples - 1) + settings.rounds * p.leads.length * (settings.debate ? 2 : 1) + (settings.personaBriefs ? p.leads.length : 0)
     : 0;
 
   return (
@@ -106,6 +106,18 @@ export default function ProjectPage() {
               <label className="flex items-center gap-2">
                 <input type="checkbox" checked={settings.sceptic} onChange={(e) => setSettings({ ...settings, sceptic: e.target.checked })} />
                 Sceptic challenges the ranking
+              </label>
+              <label className="flex items-center gap-2">
+                <input type="checkbox" checked={settings.diverge} onChange={(e) => setSettings({ ...settings, diverge: e.target.checked })} />
+                Explore with four explorer agents first
+              </label>
+              <label className="flex items-center gap-2">
+                Wildcards per round
+                <input type="number" min={0} max={2} className="input w-16 py-1" value={settings.wildcards} onChange={(e) => setSettings({ ...settings, wildcards: Math.max(0, Math.min(2, Number(e.target.value) || 0)) })} />
+              </label>
+              <label className="flex items-center gap-2">
+                RICE estimates
+                <input type="number" min={1} max={5} className="input w-16 py-1" value={settings.estimateSamples} onChange={(e) => setSettings({ ...settings, estimateSamples: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
               </label>
               {settings.personaBriefs && (
                 <label className="flex items-center gap-2">

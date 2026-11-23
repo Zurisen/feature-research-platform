@@ -15,20 +15,23 @@ export type SceneAgent = {
   color: string;
 };
 
+export type TeamMember = { id: string; name: string; kind: "lead" | "explorer" | "estimator"; state: AgentState; color: string };
+
 export const DEVELOPER_ID = "developer";
 export const SCEPTIC_ID = "sceptic";
 // Lead colours are the data-viz categorical palette in its validated order (identity, never rank),
 // stepped separately for light and dark surfaces. Leads beyond the eighth share a neutral gray.
 const PALETTE = {
-  light: { developer: "#1a1a18", sceptic: "#8a8880", overflow: "#a09e96", leads: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"] },
-  dark: { developer: "#edece7", sceptic: "#8a8880", overflow: "#6f6e68", leads: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9", "#e66767"] },
+  light: { developer: "#1a1a18", explorer: "#55534d", estimator: "#7d7b74", sceptic: "#8a8880", overflow: "#a09e96", leads: ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#6250d6", "#e34948"] },
+  dark: { developer: "#edece7", explorer: "#bdbbb3", estimator: "#94928a", sceptic: "#8a8880", overflow: "#6f6e68", leads: ["#3987e5", "#d95926", "#199e70", "#c98500", "#d55181", "#0ca30c", "#9085e9", "#e66767"] },
 };
 
-type Step = "briefs" | "research" | "positions" | "rebuttal" | "revise" | "rank" | "sceptic" | "other";
+type Step = "briefs" | "explore" | "research" | "positions" | "rebuttal" | "revise" | "rank" | "sceptic" | "other";
 
 function step(phase: string): Step {
   if (phase.startsWith("Sceptic agent")) return "sceptic";
   if (phase.includes("persona briefs")) return "briefs";
+  if (phase.includes("explorer agents")) return "explore";
   if (phase.includes("is researching")) return "research";
   if (phase.includes("reviewing the features")) return "positions";
   if (phase.includes("reacting to each other")) return "rebuttal";
@@ -55,16 +58,19 @@ export function deriveAgents(run: Run, project: Project | null, dark = false): S
   const round = run.rounds[run.rounds.length - 1];
   const finished: AgentState = run.status === "completed" ? "done" : "idle";
 
-  const devWorking = running && (now === "research" || now === "revise" || now === "rank");
-  const devGeneric = now === "research" ? "Researching the market" : now === "revise" ? "Revising the feature list" : "Ranking the features";
+  const devWorking = running && (now === "explore" || now === "research" || now === "revise" || now === "rank");
+  const explored = run.exploration?.length ?? 0;
+  const devGeneric = now === "explore" ? `Explorer agents at work: ${explored} of 4 have proposed ideas` : now === "research" ? "Researching the market" : now === "revise" ? "Revising the feature list" : "Ranking the features";
   const developer: SceneAgent = {
     id: DEVELOPER_ID,
-    name: "Developer agent",
+    name: "Developer team",
     subtitle: "Product research and ranking",
     role: "developer",
     color: DEVELOPER_COLOR,
     state: run.status === "failed" ? "error" : devWorking ? "working" : running ? "idle" : finished,
-    text: devWorking
+    text: now === "explore" && running
+      ? devGeneric
+      : devWorking
       ? (lastEvent(run.events.slice(-12), [DEVELOPER_ID], ["activity"])?.text ?? devGeneric)
       : (lastEvent(run.events, [DEVELOPER_ID], ["status"])?.text ?? (running ? "Waiting for the leads" : "")),
   };
@@ -139,4 +145,38 @@ export function pulsesFor(event: RunEvent, agents: SceneAgent[]): PulseSpec[] {
     return leads.filter((l) => l.id !== lead.id).map((l) => ({ from: lead.id, to: l.id, color: lead.color }));
   }
   return [];
+}
+
+const EXPLORER_LENSES = [
+  { id: "jobs", name: "Explorer: customer jobs" },
+  { id: "competitors", name: "Explorer: competitive gaps" },
+  { id: "capabilities", name: "Explorer: capability push" },
+  { id: "contrarian", name: "Explorer: contrarian and adjacent" },
+];
+
+/** The agents inside the developer team: the lead developer, the explorers and the extra estimators. */
+export function deriveTeam(run: Run, dark = false): TeamMember[] {
+  const colors = dark ? PALETTE.dark : PALETTE.light;
+  const running = run.status === "running";
+  const now = step(run.phase);
+  const finished: AgentState = run.status === "completed" ? "done" : "idle";
+  const estimating = running && /independent estimates/.test(run.phase);
+  const leadWorking = running && (now === "research" || now === "revise" || now === "rank" || estimating);
+
+  const team: TeamMember[] = [
+    { id: "lead-dev", name: "Lead developer", kind: "lead", color: colors.developer, state: run.status === "failed" ? "error" : leadWorking ? "working" : running ? "idle" : finished },
+  ];
+  if (run.settings.diverge || run.exploration?.length) {
+    for (const lens of EXPLORER_LENSES) {
+      const e = run.exploration?.find((x) => x.lens === lens.id);
+      const state: AgentState = e ? (e.error ? "error" : "done") : running && now === "explore" ? "working" : running ? "idle" : finished;
+      team.push({ id: `explorer-${lens.id}`, name: lens.name, kind: "explorer", color: colors.explorer, state });
+    }
+  }
+  const k = Math.max(1, run.settings.estimateSamples ?? 1);
+  for (let i = 2; i <= k; i++) {
+    const state: AgentState = estimating ? "working" : run.draftRanking ? "done" : running ? "idle" : finished;
+    team.push({ id: `estimator-${i}`, name: `Estimator ${i}`, kind: "estimator", color: colors.estimator, state });
+  }
+  return team;
 }

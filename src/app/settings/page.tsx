@@ -102,6 +102,22 @@ export default function SettingsPage() {
               <input type="checkbox" checked={settings.reuseBriefs} onChange={(e) => save({ ...settings, reuseBriefs: e.target.checked })} />
               Reuse persona briefs saved from earlier runs when a lead has not changed
             </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={settings.diverge} onChange={(e) => save({ ...settings, diverge: e.target.checked })} />
+              Explore first: four explorer agents generate ideas from different angles before the shortlist (four extra agent calls)
+            </label>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label className="label" htmlFor="wild">Wildcards per revision</label>
+                <input id="wild" type="number" min={0} max={2} className="input" value={settings.wildcards} onChange={(e) => save({ ...settings, wildcards: Math.max(0, Math.min(2, Number(e.target.value) || 0)) })} />
+                <p className="hint mt-1">Untested ideas the developer agent must add each round, so the list keeps exploring.</p>
+              </div>
+              <div>
+                <label className="label" htmlFor="est">Independent RICE estimates</label>
+                <input id="est" type="number" min={1} max={5} className="input" value={settings.estimateSamples} onChange={(e) => save({ ...settings, estimateSamples: Math.max(1, Math.min(5, Number(e.target.value) || 1)) })} />
+                <p className="hint mt-1">The median is used and the spread widens the score ranges. Estimates vary a lot between attempts, so 3 is recommended.</p>
+              </div>
+            </div>
             <div className="max-w-xs">
               <label className="label" htmlFor="cap">Team capacity (person-months per quarter)</label>
               <input id="cap" type="number" min={1} max={200} className="input" value={settings.teamCapacity} onChange={(e) => save({ ...settings, teamCapacity: Math.max(1, Math.min(200, Number(e.target.value) || 1)) })} />

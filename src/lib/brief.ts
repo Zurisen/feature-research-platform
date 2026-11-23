@@ -75,7 +75,9 @@ export function featureBrief(run: Run, project: Project | null, featureId: strin
     out.push(
       [
         `- **Rank:** ${r.rank} of ${total}${r.draftRank != null && r.draftRank !== r.rank ? ` (was ${r.draftRank} before the sceptic's review)` : ""}${r.quarter ? `, planned for quarter ${r.quarter}` : ""}`,
-        `- **RICE score:** ${r.rice} (reach ${r.reach}, impact ${r.impact}, confidence ${r.confidence}, effort ${r.effort})`,
+        r.track ? `- **Track:** ${r.track === "build" ? "build" : r.track === "validate" ? "validate with real customers before building" : "parked"}` : "",
+        r.track === "validate" && r.experiment?.trim() ? `- **Test first:** ${r.experiment.trim()}` : "",
+        `- **RICE score:** ${r.rice}${r.riceLow != null ? ` (likely range ${r.riceLow}–${r.riceHigh}, likely rank ${r.rankLow}–${r.rankHigh})` : ""} (reach ${r.reach}, impact ${r.impact}, confidence ${r.confidence}, effort ${r.effort})`,
         `- **Lead support:** average score ${r.avgLeadScore != null ? `${r.avgLeadScore}/5` : "n/a"}, ${pct(r.pointsShare)} of the leads' budget points, top pick for ${pct(r.firstChoiceShare)} of leads`,
         r.champions.length ? `- **Wanted most by:** ${r.champions.join(", ")}` : "",
       ]

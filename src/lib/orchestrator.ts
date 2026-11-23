@@ -4,9 +4,12 @@ import {
   BRIEF_SKILLS,
   BRIEF_SYSTEM,
   briefPrompt,
+  convergePrompt,
   DEVELOPER_SKILLS,
   DEVELOPER_SYSTEM,
+  explorerPrompt,
   guidanceBlock,
+  LENSES,
   leadPrompt,
   LIAISON_SYSTEM,
   liaisonPrompt,
@@ -20,8 +23,12 @@ import {
 } from "./prompts";
 import { getProject, getRun, getSavedBriefs, newId, saveBrief, saveRun } from "./store";
 import { builtInRice, EFFORT_MONTHS, runToolkit, ToolkitFeature, ToolkitResult } from "./toolkit";
+import { applyUncertainty, combineEstimates, estimateCeiling, evidenceTable, leadEvidence, riceOf, seedFrom } from "./uncertainty";
 import {
+  ConvergeOutputSchema,
   CritiqueSchema,
+  Exploration,
+  ExplorerOutputSchema,
   FinalRankingOutputSchema,
   finalPoints,
   finalScores,
@@ -48,10 +55,12 @@ import {
 } from "./types";
 
 // Run flow:
-//   persona briefs (optional, reused from earlier runs) -> developer researches
+//   persona briefs (optional, reused from earlier runs)
+//   -> explorer agents generate ideas through different lenses (optional) -> developer researches and shortlists
 //   -> [leads give positions -> leads react to each other (optional) -> developer revises] x rounds
-//   -> developer drafts the ranking -> sceptic challenges it (optional) -> developer finalises
-//   -> script scores the inputs and lays out the roadmap.
+//   -> developer drafts the ranking (several independent estimates, median kept)
+//   -> sceptic challenges it (optional) -> developer finalises
+//   -> script scores the inputs; ranges from resampling leads and estimates set the final order and roadmap.
 //
 // Every step is saved to data/runs as it finishes, and execute() only does the steps the saved run
 // is still missing. That is what lets a failed or interrupted run resume, and a finished run take
@@ -299,13 +308,62 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       }
     }
 
-    // 1. Research (done once the first round exists)
+    // 1a. Diverge: explorer agents, one per lens (each saved as it finishes)
+    if (run.rounds.length === 0 && s.diverge) {
+      run.exploration = (run.exploration ?? []).filter((e) => !e.error);
+      const todo = LENSES.filter((l) => !run.exploration!.some((e) => e.lens === l.id));
+      if (todo.length) {
+        phase(`${todo.length} explorer agents are generating ideas, each from a different angle`);
+        await mapLimit([...todo], s.concurrency, async (lens) => {
+          const agent = `explorer: ${lens.label}`;
+          try {
+            const out = await call({
+              agent,
+              system: DEVELOPER_SYSTEM,
+              prompt: explorerPrompt(project, briefs, lens, s.webResearch) + guidance("developer", "exploration"),
+              schema: ExplorerOutputSchema,
+              model: s.developerModel,
+              web: s.webResearch,
+              skills: DEV_SKILLS,
+            });
+            run.exploration!.push({ lens: lens.id, label: lens.label, notes: out.notes, ideas: out.ideas.map((i, k) => ({ ...i, id: `${lens.letter}${k + 1}` })) });
+            log(agent, "status", `Proposed ${out.ideas.length} ideas`);
+          } catch (e) {
+            if (signal.aborted) throw e;
+            run.exploration!.push({ lens: lens.id, label: lens.label, notes: "", ideas: [], error: (e as Error).message });
+            log(agent, "error", `Exploration failed: ${(e as Error).message}`);
+          }
+          await save();
+        });
+      }
+    }
+
+    // 1b. Research and shortlist (done once the first round exists)
     if (run.rounds.length === 0) {
-      phase(`Developer agent is researching${s.webResearch ? " (with web search)" : ""}`);
-      const research = await developer("research", researchPrompt(project, s.webResearch, briefs), ResearchOutputSchema, s.webResearch);
-      run.research = research.researchSummary;
-      run.rounds.push({ round: 1, features: research.features, feedback: [] });
-      log("developer", "status", `Proposed ${research.features.length} candidate features`);
+      const explored: Exploration[] = s.diverge ? (run.exploration ?? []).filter((e) => !e.error && e.ideas.length) : [];
+      if (explored.length >= 2) {
+        const ideas = explored.flatMap((e) => e.ideas);
+        phase(`Developer agent is researching and shortlisting ${ideas.length} ideas from ${explored.length} explorers`);
+        const out = await developer("research", convergePrompt(project, s.webResearch, briefs, explored), ConvergeOutputSchema, s.webResearch);
+        run.research = out.researchSummary;
+        const known = new Set(ideas.map((i) => i.id));
+        const features = out.features.map((f) => ({ ...f, origins: f.origins.filter((o) => known.has(o)) }));
+        run.parked = out.parked
+          .filter((x) => known.has(x.ideaId))
+          .map((x) => ({ ideaId: x.ideaId, title: ideas.find((i) => i.id === x.ideaId)!.title, reason: x.reason }));
+        // Ideas the developer neither used nor parked go to the pool too.
+        const accounted = new Set([...features.flatMap((f) => f.origins), ...run.parked.map((x) => x.ideaId)]);
+        for (const i of ideas) if (!accounted.has(i.id)) run.parked.push({ ideaId: i.id, title: i.title, reason: "Not picked for the shortlist." });
+        run.rounds.push({ round: 1, features, feedback: [] });
+        log("developer", "status", `Proposed ${features.length} candidate features from ${ideas.length} ideas`);
+      } else {
+        if (s.diverge) log("system", "status", "Fewer than two explorers produced ideas, so the developer agent researches on its own");
+        phase(`Developer agent is researching${s.webResearch ? " (with web search)" : ""}`);
+        const research = await developer("research", researchPrompt(project, s.webResearch, briefs), ResearchOutputSchema, s.webResearch);
+        run.research = research.researchSummary;
+        run.rounds.push({ round: 1, features: research.features, feedback: [] });
+        log("developer", "status", `Proposed ${research.features.length} candidate features`);
+      }
     }
 
     // 2. Feedback rounds
@@ -364,9 +422,16 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       // 2c. Revision (done once the next round exists)
       if (r < s.rounds && !run.rounds[r]) {
         phase(`Developer agent is revising the features after round ${r}`);
-        const rev = await developer(`revision after round ${r}`, revisionPrompt(project, round), RevisionOutputSchema);
-        run.rounds.push({ round: r + 1, features: rev.features, noteToLeads: rev.noteToLeads, changelog: rev.changelog, feedback: [] });
-        log("developer", "status", `Revised the list to ${rev.features.length} features`);
+        const wildcards = s.wildcards ?? 0;
+        const rev = await developer(
+          `revision after round ${r}`,
+          revisionPrompt(project, round, { wildcards, parked: run.parked ?? [], finalRevision: r + 1 === s.rounds }),
+          RevisionOutputSchema,
+        );
+        const ids = new Set(rev.features.map((f) => f.id));
+        const wild = wildcards ? rev.wildcards.filter((id) => ids.has(id)) : [];
+        run.rounds.push({ round: r + 1, features: rev.features, noteToLeads: rev.noteToLeads, changelog: rev.changelog, wildcards: wild, feedback: [] });
+        log("developer", "status", `Revised the list to ${rev.features.length} features${wild.length ? `, including ${wild.length} wildcard${wild.length > 1 ? "s" : ""}` : ""}`);
       }
     }
 
@@ -384,21 +449,41 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
       if (!textAnalysis.result) log("system", "status", `Feedback text analysis skipped: ${textAnalysis.reason}`);
       const insights = textInsights(textAnalysis.result);
 
-      // 3a. Draft
+      const seed = seedFrom(run.id);
+      const evidence = evidenceTable(last, leadEvidence(last, last.features.map((f) => f.id), seed));
+
+      // 3a. Draft: several independent estimates, keeping the median for each feature
       if (!run.draftRanking) {
-        phase("Developer agent is ranking the features");
-        const draft = await developer("draft ranking", rankingPrompt(project, run.rounds, insights, s.teamCapacity), RankingOutputSchema);
-        run.draftRanking = draft.ranked;
-        run.summary = draft.summary;
+        const k = Math.max(1, s.estimateSamples ?? 1);
+        phase(k > 1 ? `Developer agent is ranking the features (${k} independent estimates)` : "Developer agent is ranking the features");
+        const settled = await Promise.allSettled(
+          Array.from({ length: k }, (_, i) =>
+            developer(i === 0 ? "draft ranking" : `draft ranking, estimate ${i + 1}`, rankingPrompt(project, run.rounds, insights, s.teamCapacity, { evidence }), RankingOutputSchema),
+          ),
+        );
+        if (signal.aborted) throw new Error("Cancelled");
+        const ok = settled.filter((x): x is PromiseFulfilledResult<RankingOutput> => x.status === "fulfilled").map((x) => x.value);
+        const failed = settled.filter((x): x is PromiseRejectedResult => x.status === "rejected");
+        if (!ok.length) throw failed[0].reason;
+        if (failed.length) log("developer", "error", `${failed.length} of ${k} estimates failed: ${(failed[0].reason as Error).message}`);
+        const combined = combineEstimates(ok.map((o) => o.ranked), last.features.map((f) => f.id));
+        run.estimates = ok.length > 1 ? ok.map((o) => o.ranked) : undefined;
+        run.draftRanking = combined.ranked;
+        run.summary = ok[combined.best].summary;
+        if (ok.length > 1) log("developer", "status", `Combined ${ok.length} independent estimates`);
         await save();
       }
-      const draftScored = await scoreRanking(run.draftRanking, last, s.teamCapacity);
+      const ranged = <T extends { ranking: RankedFeature[] }>(x: T): T => ({ ...x, ranking: applyUncertainty(x.ranking, last, run.estimates, s.teamCapacity, seed) });
+      const draftScored = ranged(await scoreRanking(run.draftRanking, last, s.teamCapacity));
       let scored = draftScored;
 
       // 3b. Sceptic challenge, then the developer's final answer
       if (s.sceptic) {
         const draftText = draftScored.ranking
-          .map((x) => `${x.rank}. ${x.featureId} ${x.title}: score ${x.rice} (reach ${x.reach}, impact ${x.impact}, confidence ${x.confidence}, effort ${x.effort}). ${x.rationale}`)
+          .map(
+            (x) =>
+              `${x.rank}. ${x.featureId} ${x.title}: score ${x.rice}, likely range ${x.riceLow}–${x.riceHigh} (reach ${x.reach}, impact ${x.impact}, confidence ${x.confidence}, effort ${x.effort}), track ${x.track}. ${x.rationale}${x.experiment ? ` Experiment: ${x.experiment}` : ""}`,
+          )
           .join("\n");
         if (!run.critique) {
           phase("Sceptic agent is challenging the developer's estimates");
@@ -416,7 +501,7 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
         phase("Developer agent is answering the sceptic and finalising the ranking");
         const fin = await developer(
           "final ranking",
-          rankingPrompt(project, run.rounds, insights, s.teamCapacity, { critique: run.critique, draft: draftText }),
+          rankingPrompt(project, run.rounds, insights, s.teamCapacity, { evidence, challenge: { critique: run.critique, draft: draftText } }),
           FinalRankingOutputSchema,
         );
         run.summary = fin.summary;
@@ -425,7 +510,20 @@ async function execute(run: Run, project: Project, signal: AbortSignal) {
         const answered = new Set(fin.ranked.map((x) => x.featureId));
         const kept = run.draftRanking.filter((x) => !answered.has(x.featureId));
         if (kept.length) log("system", "status", `${kept.length} feature${kept.length > 1 ? "s" : ""} missing from the final answer kept their draft inputs`);
-        scored = await scoreRanking([...fin.ranked, ...kept], last, s.teamCapacity);
+        // The final pass is a single estimate, so it may lower a feature freely but not raise it above
+        // the highest independent estimate; such features keep the median draft inputs.
+        const highest = estimateCeiling(run.estimates);
+        const draftRow = new Map(run.draftRanking.map((x) => [x.featureId, x]));
+        const capped: string[] = [];
+        const finalRows = fin.ranked.map((x) => {
+          const ceiling = highest.get(x.featureId);
+          const draft = draftRow.get(x.featureId);
+          if (ceiling === undefined || !draft || riceOf(x) <= ceiling * 1.0001) return x;
+          capped.push(x.featureId);
+          return { ...x, reach: draft.reach, impact: draft.impact, confidence: draft.confidence, effort: draft.effort };
+        });
+        if (capped.length) log("system", "status", `Kept the median estimate for ${capped.join(", ")}: the final answer scored above every independent estimate`);
+        scored = ranged(await scoreRanking([...finalRows, ...kept], last, s.teamCapacity));
         const draftRank = new Map(draftScored.ranking.map((x) => [x.featureId, x.rank]));
         scored.ranking.forEach((x) => (x.draftRank = draftRank.get(x.featureId) ?? null));
         log("developer", "status", "Answered the sceptic and finalised the ranking");
